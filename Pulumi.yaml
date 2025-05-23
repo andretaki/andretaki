@@ -1,0 +1,6 @@
+name: chemical-marketing
+runtime:
+  name: nodejs
+  options:
+    typescript: true
+description: Chemical Marketing Platform Infrastructure 
