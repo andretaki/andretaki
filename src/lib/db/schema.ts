@@ -1,6 +1,47 @@
 import { pgTable, serial, text, timestamp, jsonb, boolean, integer, varchar, decimal, index } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import { z } from 'zod';
+import { pgSchema } from 'drizzle-orm/pg-core';
+
+// Define schemas
+export const ragSystemSchema = pgSchema('rag_system');
+export const marketingSchema = pgSchema('marketing');
+
+// RAG System Tables
+export const documents = ragSystemSchema.table('documents', {
+  id: serial('id').primaryKey(),
+  name: varchar('name', { length: 255 }).notNull(),
+  type: varchar('type', { length: 50 }).notNull(),
+  metadata: jsonb('metadata').$type<Record<string, any>>(),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow()
+});
+
+export const chunks = ragSystemSchema.table('chunks', {
+  id: serial('id').primaryKey(),
+  documentId: integer('document_id').references(() => documents.id, { onDelete: 'cascade' }).notNull(),
+  content: text('content').notNull(),
+  contentEmbedding: text('content_embedding').notNull(), // This will be a vector type in PostgreSQL
+  metadata: jsonb('metadata').$type<Record<string, any>>(),
+  confidenceScore: decimal('confidence_score', { precision: 5, scale: 2 }).default('1.00'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow()
+}, (table) => ({
+  documentIdIdx: index('chunks_document_id_idx').on(table.documentId),
+  contentEmbeddingIdx: index('chunks_content_embedding_idx').on(table.contentEmbedding)
+}));
+
+// RAG System Relations
+export const documentsRelations = relations(documents, ({ many }) => ({
+  chunks: many(chunks)
+}));
+
+export const chunksRelations = relations(chunks, ({ one }) => ({
+  document: one(documents, {
+    fields: [chunks.documentId],
+    references: [documents.id]
+  })
+}));
 
 // Products from Shopify
 export const products = pgTable('products', {
@@ -211,6 +252,19 @@ export const activityLog = pgTable('activity_log', {
   createdAt: timestamp('created_at').defaultNow()
 });
 
+// Agent configurations
+export const agentConfigurations = marketingSchema.table('agent_configurations', {
+  id: serial('id').primaryKey(),
+  agent_type: varchar('agent_type', { length: 100 }).notNull().unique(),
+  llm_model_name: varchar('llm_model_name', { length: 100 }).notNull(),
+  base_prompt: text('base_prompt').notNull(),
+  default_parameters: jsonb('default_parameters'),
+  output_parser_type: varchar('output_parser_type', { length: 50 }),
+  is_active: boolean('is_active').default(true),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow()
+});
+
 // Relations
 export const productsRelations = relations(products, ({ many }) => ({
   applications: many(productApplications),
@@ -281,4 +335,23 @@ export type BlogPost = typeof blogPosts.$inferSelect;
 export type Video = typeof videos.$inferSelect;
 export type QueueItem = typeof contentQueue.$inferSelect;
 export type VideoPersona = typeof videoPersonas.$inferSelect;
-export type VideoSegment = typeof videoSegments.$inferSelect; 
+export type VideoSegment = typeof videoSegments.$inferSelect;
+
+// Content Pipeline
+export const contentPipeline = marketingSchema.table('content_pipeline', {
+  id: serial('id').primaryKey(),
+  task_type: varchar('task_type', { length: 50 }).notNull(),
+  status: varchar('status', { length: 20 }).$type<'pending' | 'in_progress' | 'completed' | 'failed' | 'error'>().default('pending'),
+  title: varchar('title', { length: 255 }).notNull(),
+  summary: text('summary'),
+  target_audience: varchar('target_audience', { length: 255 }),
+  data: jsonb('data').$type<Record<string, any>>(),
+  source_chunk_ids: integer('source_chunk_ids').array(),
+  source_document_ids: integer('source_document_ids').array(),
+  related_pipeline_id: integer('related_pipeline_id'),
+  keywords: jsonb('keywords').$type<string[]>(),
+  error_message: text('error_message'),
+  completed_at: timestamp('completed_at'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow()
+}); 

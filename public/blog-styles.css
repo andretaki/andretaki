@@ -1,0 +1,235 @@
+/* Blog Article Styles */
+:root {
+  --article-max-width: 800px;
+  --article-padding: 2rem;
+  --primary-color: #4f46e5;
+  --text-color: #1f2937;
+  --text-color-light: #6b7280;
+  --background-color: #ffffff;
+  --border-color: #e5e7eb;
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text-color: #f3f4f6;
+    --text-color-light: #9ca3af;
+    --background-color: #1f2937;
+    --border-color: #374151;
+  }
+}
+
+/* Base article styles */
+.article-main {
+  max-width: var(--article-max-width);
+  margin: 0 auto;
+  padding: var(--article-padding);
+  color: var(--text-color);
+  background-color: var(--background-color);
+  line-height: 1.6;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+/* Header styles */
+#extraction-header {
+  margin-bottom: 2rem;
+  text-align: center;
+}
+
+#extraction-header h1 {
+  font-size: 2.5rem;
+  font-weight: 700;
+  margin-bottom: 1rem;
+  line-height: 1.2;
+}
+
+.subtitle {
+  font-size: 1.25rem;
+  color: var(--text-color-light);
+  margin-bottom: 2rem;
+}
+
+/* Navigation styles */
+.article-nav {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  margin-bottom: 2rem;
+  flex-wrap: wrap;
+}
+
+.article-nav a {
+  color: var(--primary-color);
+  text-decoration: none;
+  padding: 0.5rem 1rem;
+  border-radius: 0.375rem;
+  border: 1px solid var(--border-color);
+  transition: all 0.2s;
+}
+
+.article-nav a:hover {
+  background-color: var(--primary-color);
+  color: white;
+  border-color: var(--primary-color);
+}
+
+/* Section styles */
+section {
+  margin-bottom: 3rem;
+}
+
+h2 {
+  font-size: 1.875rem;
+  font-weight: 600;
+  margin-bottom: 1.5rem;
+  color: var(--text-color);
+}
+
+h3 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  color: var(--text-color);
+}
+
+p {
+  margin-bottom: 1.5rem;
+}
+
+/* Image styles */
+.img-medium {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
+  margin: 2rem 0;
+}
+
+/* List styles */
+ul, ol {
+  margin-bottom: 1.5rem;
+  padding-left: 1.5rem;
+}
+
+li {
+  margin-bottom: 0.5rem;
+}
+
+/* Box styles */
+.info-box, .highlight-box, .warning-box {
+  padding: 1.5rem;
+  border-radius: 0.5rem;
+  margin: 2rem 0;
+}
+
+.info-box {
+  background-color: #e0f2fe;
+  border: 1px solid #bae6fd;
+}
+
+.highlight-box {
+  background-color: #fef9c3;
+  border: 1px solid #fde047;
+}
+
+.warning-box {
+  background-color: #fee2e2;
+  border: 1px solid #fecaca;
+}
+
+/* Dark mode adjustments for boxes */
+@media (prefers-color-scheme: dark) {
+  .info-box {
+    background-color: #075985;
+    border-color: #0c4a6e;
+  }
+
+  .highlight-box {
+    background-color: #854d0e;
+    border-color: #713f12;
+  }
+
+  .warning-box {
+    background-color: #991b1b;
+    border-color: #7f1d1d;
+  }
+}
+
+/* Product spotlight styles */
+.product-spotlight {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1.5rem;
+  margin: 2rem 0;
+}
+
+.product-card {
+  padding: 1.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  text-align: center;
+}
+
+/* Button styles */
+.btn, .btn-small {
+  display: inline-block;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.375rem;
+  text-decoration: none;
+  transition: all 0.2s;
+  font-weight: 500;
+}
+
+.btn {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+.btn-small {
+  background-color: transparent;
+  color: var(--primary-color);
+  border: 1px solid var(--primary-color);
+  padding: 0.5rem 1rem;
+}
+
+.btn:hover, .btn-small:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+/* Call to action styles */
+.cta {
+  text-align: center;
+  padding: 3rem 2rem;
+  background-color: #f3f4f6;
+  border-radius: 0.5rem;
+  margin: 3rem 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  .cta {
+    background-color: #374151;
+  }
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  :root {
+    --article-padding: 1rem;
+  }
+
+  #extraction-header h1 {
+    font-size: 2rem;
+  }
+
+  .subtitle {
+    font-size: 1.125rem;
+  }
+
+  h2 {
+    font-size: 1.5rem;
+  }
+
+  h3 {
+    font-size: 1.25rem;
+  }
+} 

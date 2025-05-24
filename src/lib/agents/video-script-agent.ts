@@ -1,8 +1,11 @@
 import { BaseAgent } from './base-agent';
 import { AgentResult } from '../../types/agents';
 import { Product } from '../db/schema';
+import { db } from '../db';
+import { eq } from 'drizzle-orm';
+import { agentConfigurations } from '../db/schema';
 
-interface VideoScript {
+export interface VideoScript {
   title: string;
   description: string;
   script: string;
@@ -182,7 +185,29 @@ export class VideoScriptAgent extends BaseAgent {
     }
   ): Promise<AgentResult<VideoScript>> {
     return this.executeWithRetry(async () => {
-      const prompt = this.buildPrompt(product, blogContent, options);
+      // 1. Fetch Agent Configuration
+      const agentConfig = await db.query.agentConfigurations.findFirst({
+        where: eq(agentConfigurations.agent_type, 'video_script')
+      });
+      if (!agentConfig) throw new Error("Video script agent configuration not found.");
+
+      // 2. Build the prompt by replacing placeholders in the base prompt
+      const prompt = agentConfig.base_prompt
+        .replace('{{PRODUCT_TITLE}}', product.title)
+        .replace('{{PRODUCT_FORMULA}}', product.chemicalFormula || 'N/A')
+        .replace('{{PRODUCT_CAS}}', product.casNumber || 'N/A')
+        .replace('{{PRODUCT_PROPERTIES}}', JSON.stringify(product.properties || {}))
+        .replace('{{BLOG_CONTENT}}', blogContent)
+        .replace('{{PLATFORM}}', options.platform)
+        .replace('{{DURATION}}', options.duration.toString())
+        .replace('{{STYLE}}', options.style)
+        .replace('{{VOICE_TYPE}}', options.voiceType)
+        .replace('{{INCLUDE_SUBTITLES}}', options.includeSubtitles.toString())
+        .replace('{{TEMPLATE}}', options.template ? JSON.stringify(VIDEO_TEMPLATES[options.template]) : 'null')
+        .replace('{{VISUAL_STYLE}}', options.visualStyle ? JSON.stringify(VISUAL_STYLES[options.visualStyle]) : 'null')
+        .replace('{{MOLECULAR_VISUALIZATION}}', options.molecularVisualization ? JSON.stringify(MOLECULAR_VISUALIZATIONS[options.molecularVisualization]) : 'null');
+
+      // 3. Call the LLM
       const result = await this.geminiPro.generateContent(prompt);
       const response = await result.response;
       const content = response.text();
@@ -206,82 +231,12 @@ export class VideoScriptAgent extends BaseAgent {
     }, 'Generate video script');
   }
 
-  private buildPrompt(
-    product: Product,
-    blogContent: string,
-    options: {
-      platform: string;
-      duration: number;
-      style: string;
-      voiceType: string;
-      includeSubtitles: boolean;
-      template?: keyof typeof VIDEO_TEMPLATES;
-      visualStyle?: keyof typeof VISUAL_STYLES;
-      molecularVisualization?: keyof typeof MOLECULAR_VISUALIZATIONS;
-    }
-  ): string {
-    const template = options.template ? VIDEO_TEMPLATES[options.template] : null;
-    const visualStyle = options.visualStyle ? VISUAL_STYLES[options.visualStyle] : null;
-    const molecularVisualization = options.molecularVisualization 
-      ? MOLECULAR_VISUALIZATIONS[options.molecularVisualization] 
-      : null;
-    
-    return `
-      Create a video script for the following chemical product:
-      
-      Product: ${product.title}
-      Chemical Formula: ${product.chemicalFormula}
-      CAS Number: ${product.casNumber}
-      Properties: ${JSON.stringify(product.properties)}
-      
-      Blog Content:
-      ${blogContent}
-      
-      Video Requirements:
-      Platform: ${options.platform}
-      Duration: ${options.duration} seconds
-      Style: ${options.style}
-      Voice Type: ${options.voiceType}
-      Include Subtitles: ${options.includeSubtitles}
-      ${template ? `Template: ${options.template}` : ''}
-      ${visualStyle ? `Visual Style: ${options.visualStyle}` : ''}
-      ${molecularVisualization ? `Molecular Visualization: ${options.molecularVisualization}` : ''}
-      
-      The script should include:
-      1. A compelling title and description
-      2. A well-structured script with timestamps
-      3. Visual cues for each section:
-         - Molecular animations (${molecularVisualization ? JSON.stringify(molecularVisualization) : 'default'})
-         - Chemical reactions
-         - Real-world applications
-         - Safety demonstrations
-         - Text overlays
-      4. Voice instructions:
-         - Tone and pace
-         - Words to emphasize
-         - Pauses and transitions
-      5. Branding elements:
-         - Logo placement
-         - Color scheme (${visualStyle ? JSON.stringify(visualStyle.colorScheme) : 'default'})
-         - Watermark
-      6. Visual style specifications:
-         ${visualStyle ? JSON.stringify(visualStyle, null, 2) : 'Use default style'}
-      
-      ${template ? `
-      Follow this template structure:
-      ${JSON.stringify(template, null, 2)}
-      ` : ''}
-      
-      Format the response as a JSON object with all required fields.
-      Ensure the script is engaging and educational while maintaining technical accuracy.
-    `;
-  }
-
   private parseScript(content: string): VideoScript {
     try {
       return JSON.parse(content);
     } catch (error) {
-      throw new Error(`Failed to parse video script: ${error}`);
+      console.error('Failed to parse video script:', error);
+      throw new Error('Invalid video script format');
     }
   }
 
