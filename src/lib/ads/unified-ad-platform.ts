@@ -1,5 +1,5 @@
 import { openai } from '../ai/client';
-import type { Product } from '../types/product';
+import type { Product } from '../db/schema';
 
 interface CampaignConfig {
   product: Product;
@@ -124,20 +124,22 @@ export class UnifiedAdManager {
       model: "gpt-4-turbo-2024-04-09",
       messages: [{
         role: "system",
-        content: "Generate PPC keywords for chemical products including long-tail variations, competitor terms, and application-specific queries."
+        content: `Generate PPC keywords for chemical products including long-tail variations, competitor terms, and application-specific queries. 
+
+Return your response as a JSON object with the following structure:
+{
+  "exact_match": ["keyword1", "keyword2"],
+  "phrase_match": ["phrase keyword 1", "phrase keyword 2"],
+  "broad_match": ["broad keyword 1", "broad keyword 2"],
+  "negative_keywords": ["negative keyword 1", "negative keyword 2"]
+}
+
+For the product: ${product.title}
+Chemical Formula: ${product.chemicalFormula || 'N/A'}
+CAS Number: ${product.casNumber || 'N/A'}
+Description: ${product.description || 'N/A'}`
       }],
-      response_format: { 
-        type: "json_object",
-        schema: {
-          type: "object",
-          properties: {
-            exact_match: { type: "array", items: { type: "string" } },
-            phrase_match: { type: "array", items: { type: "string" } },
-            broad_match: { type: "array", items: { type: "string" } },
-            negative_keywords: { type: "array", items: { type: "string" } },
-          }
-        }
-      },
+      response_format: { type: "json_object" },
     });
     
     return JSON.parse(completion.choices[0].message.content || '{}');

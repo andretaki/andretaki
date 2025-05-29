@@ -1,258 +1,232 @@
-import { pgTable, serial, text, timestamp, jsonb, boolean, integer, varchar, decimal, index } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, timestamp, jsonb, boolean, integer, varchar, decimal, index, bigint } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import { z } from 'zod';
 import { pgSchema } from 'drizzle-orm/pg-core';
 
-// Define schemas
+// Define schemas based on user's DDL
 export const ragSystemSchema = pgSchema('rag_system');
 export const marketingSchema = pgSchema('marketing');
+// public schema is default, no need to define separately unless using specific features
 
-// RAG System Tables
+// --- RAG System Tables ---
 export const documents = ragSystemSchema.table('documents', {
   id: serial('id').primaryKey(),
-  name: varchar('name', { length: 255 }).notNull(),
-  type: varchar('type', { length: 50 }).notNull(),
-  metadata: jsonb('metadata').$type<Record<string, any>>(),
-  createdAt: timestamp('created_at').defaultNow(),
-  updatedAt: timestamp('updated_at').defaultNow()
+  source_identifier: varchar('source_identifier', { length: 512 }).notNull(),
+  source_type: varchar('source_type', { length: 50 }).notNull(),
+  name: varchar('name', { length: 512 }).notNull(),
+  type: varchar('type', { length: 100 }),
+  size: integer('size'),
+  num_pages: integer('num_pages'),
+  uploaded_at: timestamp('uploaded_at', { withTimezone: true }).defaultNow().notNull(),
+  last_modified_at: timestamp('last_modified_at', { withTimezone: true }).defaultNow().notNull(),
+  processing_status: varchar('processing_status', { length: 50 }).default('pending').notNull(),
+  extracted_metadata: jsonb('extracted_metadata'),
+  content_hash: varchar('content_hash', { length: 64 }),
+  access_control_tags: jsonb('access_control_tags'),
+  source_url: text('source_url'),
+  document_version: integer('document_version').default(1).notNull(),
+  created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const chunks = ragSystemSchema.table('chunks', {
   id: serial('id').primaryKey(),
-  documentId: integer('document_id').references(() => documents.id, { onDelete: 'cascade' }).notNull(),
+  document_id: integer('document_id').references(() => documents.id, { onDelete: 'cascade' }).notNull(),
   content: text('content').notNull(),
-  contentEmbedding: text('content_embedding').notNull(), // This will be a vector type in PostgreSQL
-  metadata: jsonb('metadata').$type<Record<string, any>>(),
-  confidenceScore: decimal('confidence_score', { precision: 5, scale: 2 }).default('1.00'),
-  createdAt: timestamp('created_at').defaultNow(),
-  updatedAt: timestamp('updated_at').defaultNow()
+  chunk_hash: varchar('chunk_hash', { length: 64 }),
+  metadata: jsonb('metadata').notNull(),
+  chunk_type: text('chunk_type').default('text').notNull(),
+  word_count: integer('word_count'),
+  char_count: integer('char_count'),
+  parent_chunk_id: integer('parent_chunk_id'), // Self-reference without foreign key constraint
+  confidence_score: integer('confidence_score').default(70), // smallint maps to integer
+  chunk_last_modified: timestamp('chunk_last_modified', { withTimezone: true }).defaultNow().notNull(),
+  chunk_version: integer('chunk_version').default(1).notNull(),
+  created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  content_embedding: text('content_embedding').notNull(), // pgvector type, represented as text in Drizzle
+  access_control_tags: jsonb('access_control_tags'),
+  content_tsv: text('content_tsv'), // tsvector type, represented as text
 }, (table) => ({
-  documentIdIdx: index('chunks_document_id_idx').on(table.documentId),
-  contentEmbeddingIdx: index('chunks_content_embedding_idx').on(table.contentEmbedding)
+  idx_rag_chunks_document_id: index('idx_rag_chunks_document_id').on(table.document_id),
+  idx_chunks_chunk_hash: index('idx_chunks_chunk_hash').on(table.chunk_hash),
+  // Specific GIN/vector indexes are managed outside Drizzle ORM's typical definitions
 }));
 
-// RAG System Relations
-export const documentsRelations = relations(documents, ({ many }) => ({
-  chunks: many(chunks)
-}));
-
-export const chunksRelations = relations(chunks, ({ one }) => ({
-  document: one(documents, {
-    fields: [chunks.documentId],
-    references: [documents.id]
-  })
-}));
-
-// Products from Shopify
-export const products = pgTable('products', {
+export const syncState = ragSystemSchema.table('sync_state', {
   id: serial('id').primaryKey(),
-  shopifyId: varchar('shopify_id', { length: 255 }).notNull().unique(),
-  handle: text('handle').unique().notNull(),
-  title: varchar('title', { length: 255 }).notNull(),
+  source_type: varchar('source_type', { length: 50 }).notNull().unique(),
+  last_sync_timestamp: timestamp('last_sync_timestamp', { withTimezone: true }),
+  last_sync_status: varchar('last_sync_status', { length: 50 }),
+  last_cursor: text('last_cursor'),
+  details: text('details'),
+  updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  sync_state_source_type_idx: index('sync_state_source_type_idx').on(table.source_type),
+}));
+
+export const shopifySyncState = ragSystemSchema.table('shopify_sync_state', {
+  id: serial('id').primaryKey(),
+  entity_type: varchar('entity_type', { length: 50 }).notNull().unique(),
+  status: varchar('status', { length: 50 }).default('idle').notNull(),
+  last_rest_since_id: bigint('last_rest_since_id', { mode: 'number' }),
+  last_cursor: text('last_cursor'),
+  last_sync_start_time: timestamp('last_sync_start_time', { withTimezone: true }),
+  last_processed_count: integer('last_processed_count'),
+  total_processed_count: integer('total_processed_count').default(0),
+  last_error: text('last_error'),
+  updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  idx_shopify_sync_state_entity_type: index('idx_shopify_sync_state_entity_type').on(table.entity_type),
+  idx_shopify_sync_state_status: index('idx_shopify_sync_state_status').on(table.status),
+}));
+
+// --- Shopify Sync Data Tables (in rag_system schema as per user DDL) ---
+export const shopifySyncProducts = ragSystemSchema.table('shopify_sync_products', {
+  id: serial('id').primaryKey(), // Internal DB id
+  productId: bigint('product_id', { mode: 'number' }).unique(), // Shopify's product ID
+  title: text('title'),
   description: text('description'),
-  vendor: text('vendor'),
   productType: text('product_type'),
-  tags: text('tags').array(),
-  price: decimal('price', { precision: 10, scale: 2 }),
+  vendor: text('vendor'),
+  handle: text('handle'),
+  status: text('status'),
+  tags: text('tags'), // This is a single text field in the DDL, not an array.
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+  createdAtShopify: timestamp('created_at', { withTimezone: true }),
+  updatedAtShopify: timestamp('updated_at', { withTimezone: true }),
+  variants: jsonb('variants'),
+  images: jsonb('images'),
+  options: jsonb('options'),
+  metafields: jsonb('metafields'), // Chemical specific data can be stored here.
+  syncDate: timestamp('sync_date', { mode: 'date', withTimezone: false }).notNull(), // date type
+  // Adding chemical-specific fields, assuming they can be added to this table
+  // or are part of the `metafields` jsonb. For typed access, defining them:
   chemicalFormula: varchar('chemical_formula', { length: 100 }),
   casNumber: varchar('cas_number', { length: 100 }),
   properties: jsonb('properties').$type<Record<string, any>>(),
   safetyInfo: jsonb('safety_info').$type<Record<string, any>>(),
-  applications: text('applications').array(),
-  isActive: boolean('is_active').default(true),
-  lastSynced: timestamp('last_synced').defaultNow(),
-  createdAt: timestamp('created_at').defaultNow(),
-  updatedAt: timestamp('updated_at').defaultNow()
+  // These fields are not in the user's DDL for shopify_sync_products, but were in original schema.
+  // They might be better in a separate `marketing.products` table that links to this one.
+  // For now, adding them here to match the `Product` type used by agents.
 });
 
-// Generated applications by AI
-export const productApplications = pgTable('product_applications', {
+export const shopifySyncCustomers = ragSystemSchema.table('shopify_sync_customers', {
   id: serial('id').primaryKey(),
-  productId: integer('product_id').references(() => products.id).notNull(),
-  application: varchar('application', { length: 255 }).notNull(),
-  industry: varchar('industry', { length: 255 }).notNull(),
-  useCase: text('use_case').notNull(),
-  technicalDetails: text('technical_details'),
-  safetyConsiderations: text('safety_considerations'),
-  regulatoryCompliance: jsonb('regulatory_compliance').$type<string[]>(),
-  environmentalImpact: text('environmental_impact'),
-  costEffectiveness: text('cost_effectiveness'),
-  creativity: integer('creativity').notNull(),
-  marketPotential: integer('market_potential').notNull(),
-  createdAt: timestamp('created_at').defaultNow(),
-  updatedAt: timestamp('updated_at').defaultNow()
+  customer_id: bigint('customer_id', { mode: 'number' }).unique(),
+  first_name: text('first_name'),
+  last_name: text('last_name'),
+  email: text('email'),
+  phone: text('phone'),
+  verified_email: boolean('verified_email'),
+  accepts_marketing: boolean('accepts_marketing'),
+  orders_count: integer('orders_count'),
+  state: text('state'),
+  total_spent: decimal('total_spent', { precision: 12, scale: 2 }),
+  note: text('note'),
+  addresses: jsonb('addresses'),
+  default_address: jsonb('default_address'),
+  tax_exemptions: jsonb('tax_exemptions'),
+  tax_exempt: boolean('tax_exempt'),
+  tags: text('tags'),
+  created_at: timestamp('created_at', { withTimezone: true }),
+  updated_at: timestamp('updated_at', { withTimezone: true }),
+  sync_date: timestamp('sync_date', { mode: 'date', withTimezone: false }).notNull(),
 });
 
-// Blog Outline Schema
-export const BlogOutlineZodSchema = z.object({
-  title: z.string().max(70, "Title should be 70 characters or less").describe("Compelling, SEO-friendly blog post title."),
-  hook: z.string().min(50, "Hook should be at least 50 characters").describe("Engaging opening (1-3 sentences) to capture reader interest and state the post's purpose."),
-  targetAudience: z.string().describe("Specific target audience for this blog post (e.g., R&D Scientists, Lab Managers, Procurement Specialists, Students)."),
-  persona: z.string().describe("Assumed persona of the writer (e.g., Lead Chemist, Industry Analyst, Technical Expert, Seasoned Educator)."),
-  tone: z.enum(['technical_deep_dive', 'informative_overview', 'problem_solution', 'case_study_focused', 'thought_leadership', 'educational_tutorial'])
-    .describe("Overall tone and style of the blog post."),
-  technicalDepth: z.enum(['beginner', 'intermediate', 'expert'])
-    .describe("Level of technical detail required. Beginner assumes little prior knowledge, expert can use jargon and complex concepts."),
-  sections: z.array(
-    z.object({
-      title: z.string().describe("Catchy and descriptive title for this section."),
-      points: z.array(z.string()).min(1).describe("Key bullet points, subtopics, or questions to address in this section. These should be actionable for the writer."),
-      keyTakeaways: z.array(z.string()).optional().describe("Main takeaways or summary points for this section."),
-      estimatedWordCount: z.number().int().positive().optional().describe("Estimated word count for this section."),
-    })
-  ).min(3, "Must have at least 3 sections").max(7, "Should not exceed 7 sections").describe("Main sections of the blog post."),
-  conclusion: z.string().min(50, "Conclusion should be at least 50 characters").describe("Strong concluding paragraph summarizing key points, reinforcing the main message, and offering a final thought."),
-  cta: z.object({
-    text: z.string().describe("Call-to-action text (e.g., 'Learn More about [Product]', 'Request a Sample', 'Contact Our Experts')."),
-    linkPlaceholder: z.string().describe("Placeholder for the CTA link (e.g., '/product/[slug]', '/contact-us', 'datasheet-download-link').")
-  }).describe("Relevant call-to-action for the reader."),
-  seoElements: z.object({
-    primaryKeyword: z.string().describe("The main SEO keyword/keyphrase for the post."),
-    secondaryKeywords: z.array(z.string()).min(2).describe("At least 2-3 supporting LSI or secondary keywords."),
-    metaDescription: z.string().min(70, "Meta description should be 70-160 characters").max(160, "Meta description should be 70-160 characters").describe("SEO meta description."),
-    internalLinkSuggestions: z.array(z.string().url().or(z.string().startsWith('/'))).optional().describe("Suggestions for internal links (e.g., related product pages, other blog posts - provide relative paths or full URLs)."),
-    externalLinkSuggestions: z.array(z.string().url()).optional().describe("Suggestions for relevant external authoritative links (full URLs)."),
-  }).describe("SEO related elements for the blog post."),
-  estimatedTotalWordCount: z.number().int().positive().describe("Estimated total word count for the blog post."),
-}).describe("Schema for a comprehensive and actionable blog post outline.");
-
-export type BlogOutline = z.infer<typeof BlogOutlineZodSchema>;
-
-// Blog content
-export const blogPosts = pgTable('blog_posts', {
+export const shopifySyncOrders = ragSystemSchema.table('shopify_sync_orders', {
   id: serial('id').primaryKey(),
-  productId: integer('product_id').references(() => products.id).notNull(),
-  applicationId: integer('application_id').references(() => productApplications.id),
-  title: varchar('title', { length: 255 }).notNull(),
-  slug: varchar('slug', { length: 255 }).notNull().unique(),
-  outline: jsonb('outline').$type<BlogOutline>(),
-  content: text('content').notNull(),
-  excerpt: text('excerpt'),
-  seoTitle: text('seo_title'),
-  metaDescription: text('meta_description'),
-  keywords: text('keywords').array(),
-  type: varchar('type', { length: 20 }).$type<'blog' | 'safety' | 'safety_series'>().default('blog'),
-  metadata: jsonb('metadata').$type<{
-    safetyLevel?: 'basic' | 'intermediate' | 'advanced';
-    targetAudience?: string;
-    writerPersona?: string;
-    blogTone?: BlogOutline['tone'];
-    technicalDepthLevel?: BlogOutline['technicalDepth'];
-  }>(),
-  status: varchar('status', { length: 20 }).$type<'draft' | 'published' | 'archived'>().default('draft'),
-  wordCount: integer('word_count'),
-  readingTime: integer('reading_time'), // in minutes
-  scheduledFor: timestamp('scheduled_for'),
-  publishedAt: timestamp('published_at'),
-  createdAt: timestamp('created_at').defaultNow(),
-  updatedAt: timestamp('updated_at').defaultNow()
+    order_id: bigint('order_id', { mode: 'number' }).unique(),
+    name: text('name'),
+    order_number: integer('order_number'),
+    customer_id: bigint('customer_id', { mode: 'number' }),
+    email: text('email'),
+    phone: text('phone'),
+    financial_status: text('financial_status'),
+    fulfillment_status: text('fulfillment_status'),
+    processed_at: timestamp('processed_at', { withTimezone: true }),
+    currency: text('currency'),
+    total_price: decimal('total_price', { precision: 12, scale: 2 }),
+    subtotal_price: decimal('subtotal_price', { precision: 12, scale: 2 }),
+    total_tax: decimal('total_tax', { precision: 12, scale: 2 }),
+    total_discounts: decimal('total_discounts', { precision: 12, scale: 2 }),
+    total_shipping: decimal('total_shipping', { precision: 12, scale: 2 }),
+    billing_address: jsonb('billing_address'),
+    shipping_address: jsonb('shipping_address'),
+    line_items: jsonb('line_items'),
+    shipping_lines: jsonb('shipping_lines'),
+    discount_applications: jsonb('discount_applications'),
+    note: text('note'),
+    tags: text('tags'),
+    created_at: timestamp('created_at', { withTimezone: true }),
+    updated_at: timestamp('updated_at', { withTimezone: true }),
+    sync_date: timestamp('sync_date', { mode: 'date', withTimezone: false }).notNull(),
+    first_name: text('first_name'),
+    last_name: text('last_name'),
 });
 
-// NEW: Video Personas
-export const videoPersonas = pgTable('video_personas', {
+export const shopifySyncCollections = ragSystemSchema.table('shopify_sync_collections', {
   id: serial('id').primaryKey(),
-  name: varchar('name', { length: 100 }).notNull().unique(),
+    collection_id: bigint('collection_id', { mode: 'number' }).unique(),
+    title: text('title'),
+    handle: text('handle'),
   description: text('description'),
-  style_prompt_modifier: text('style_prompt_modifier').notNull(),
-  humor_style: text('humor_style').notNull(),
-  visual_theme_keywords: text('visual_theme_keywords').array(),
-  voice_characteristics: jsonb('voice_characteristics').$type<{
-    style: string;
-    pitch?: string;
-    speed?: string;
-  }>(),
-  music_style_keywords: text('music_style_keywords').array(),
-  example_video_urls: text('example_video_urls').array(),
-  createdAt: timestamp('created_at').defaultNow(),
-  updatedAt: timestamp('updated_at').defaultNow(),
+    description_html: text('description_html'),
+    products_count: integer('products_count'),
+    products: jsonb('products'),
+    rule_set: jsonb('rule_set'),
+    sort_order: text('sort_order'),
+    published_at: timestamp('published_at', { withTimezone: true }),
+    template_suffix: text('template_suffix'),
+    updated_at: timestamp('updated_at', { withTimezone: true }),
+    sync_date: timestamp('sync_date', { mode: 'date', withTimezone: false }).notNull(),
 });
 
-// NEW: Video Segments
-export const videoSegments = pgTable('video_segments', {
+export const shopifySyncBlogArticles = ragSystemSchema.table('shopify_sync_blog_articles', {
   id: serial('id').primaryKey(),
-  videoId: integer('video_id').references(() => videos.id, { onDelete: 'cascade' }).notNull(),
-  segment_order: integer('segment_order').notNull(),
-  segment_type: varchar('segment_type', { length: 50 }).notNull(),
-  duration_seconds: integer('duration_seconds').notNull(),
-  
-  // Content Sources
-  source_blog_post_id: integer('source_blog_post_id').references(() => blogPosts.id, { onDelete: 'set null' }),
-  source_product_id: integer('source_product_id').references(() => products.id, { onDelete: 'set null' }),
-  source_application_id: integer('source_application_id').references(() => productApplications.id, { onDelete: 'set null' }),
-  source_safety_data_sheet_id: integer('source_safety_data_sheet_id'),
-
-  // AI Generated Content
-  narration_script: text('narration_script'),
-  visual_concept_description: text('visual_concept_description'),
-  visual_generation_prompts: jsonb('visual_generation_prompts').$type<string[]>(),
-  text_overlay_content: text('text_overlay_content').array(),
-  
-  // Generated Assets
-  generated_visual_asset_url: text('generated_visual_asset_url'),
-  generated_voiceover_asset_url: text('generated_voiceover_asset_url'),
-  
-  status: varchar('status', { length: 20 }).$type<'pending' | 'scripting' | 'visualizing' | 'voicing' | 'editing' | 'completed' | 'failed'>().default('pending'),
-  error_message: text('error_message'),
-  createdAt: timestamp('created_at').defaultNow(),
-  updatedAt: timestamp('updated_at').defaultNow()
+    blog_id: bigint('blog_id', { mode: 'number' }),
+    article_id: bigint('article_id', { mode: 'number' }),
+    blog_title: text('blog_title'),
+    title: text('title'),
+    author: text('author'),
+    content: text('content'),
+    content_html: text('content_html'),
+    excerpt: text('excerpt'),
+    handle: text('handle'),
+    image: jsonb('image'),
+    tags: text('tags'),
+    seo: jsonb('seo'),
+    status: text('status'),
+    published_at: timestamp('published_at', { withTimezone: true }),
+    created_at: timestamp('created_at', { withTimezone: true }),
+    updated_at: timestamp('updated_at', { withTimezone: true }),
+    comments_count: integer('comments_count'),
+    summary_html: text('summary_html'),
+    template_suffix: text('template_suffix'),
+    sync_date: timestamp('sync_date', { mode: 'date', withTimezone: false }).notNull(),
 }, (table) => ({
-  videoIdOrderIdx: index('video_segments_video_id_order_idx').on(table.videoId, table.segment_order),
+    unique_blog_article: index('unique_blog_article_idx').on(table.blog_id, table.article_id), // Drizzle doesn't support unique constraints directly in table def like this, but index can be unique
 }));
 
-// MODIFY: videos table
-export const videos = pgTable('videos', {
+// Need to define these tables that are referenced in relations
+export const productApplications = marketingSchema.table('product_applications', {
   id: serial('id').primaryKey(),
-  blogPostId: integer('blog_post_id').references(() => blogPosts.id, { onDelete: 'set null' }),
-  productId: integer('product_id').references(() => products.id, { onDelete: 'set null' }),
-  videoPersonaId: integer('video_persona_id').references(() => videoPersonas.id, { onDelete: 'set null' }),
-
-  platform: varchar('platform', { length: 50 }).notNull(),
-  title: varchar('title', { length: 255 }).notNull(),
+  productId: integer('product_id').references(() => shopifySyncProducts.id, { onDelete: 'cascade' }).notNull(),
+  application: text('application').notNull(),
   description: text('description'),
-  
-  overall_concept_prompt: text('overall_concept_prompt'),
-  target_audience_description: text('target_audience_description'),
-  keywords: text('keywords').array(),
-
-  status: varchar('status', { length: 20 }).$type<'planning' | 'segment_generation' | 'asset_generation' | 'editing' | 'rendering' | 'completed' | 'failed'>().default('planning'),
-  
-  scheduledFor: timestamp('scheduled_for'),
-  publishedAt: timestamp('published_at'),
-  createdAt: timestamp('created_at').defaultNow(),
-  updatedAt: timestamp('updated_at').defaultNow()
-}, (table) => ({
-  productIdIdx: index('videos_product_id_idx').on(table.productId),
-  videoPersonaIdIdx: index('videos_video_persona_idx').on(table.videoPersonaId),
-}));
-
-// Content generation queue
-export const contentQueue = pgTable('content_queue', {
-  id: serial('id').primaryKey(),
-  productId: integer('product_id').references(() => products.id).notNull(),
-  contentType: varchar('content_type', { length: 50 }).notNull(),
-  status: varchar('status', { length: 20 }).$type<'pending' | 'processing' | 'completed' | 'failed'>().default('pending'),
-  priority: integer('priority').default(0),
-  scheduledFor: timestamp('scheduled_for'),
-  completedAt: timestamp('completed_at'),
-  error: text('error'),
-  createdAt: timestamp('created_at').defaultNow(),
-  updatedAt: timestamp('updated_at').defaultNow()
+  created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
-// System activity log
-export const activityLog = pgTable('activity_log', {
+export const blogPosts = marketingSchema.table('blog_posts', {
   id: serial('id').primaryKey(),
-  type: varchar('type', { length: 50 }).notNull(),
-  entity: varchar('entity', { length: 50 }).notNull(),
-  entityId: integer('entity_id'),
-  action: text('action').notNull(),
-  details: jsonb('details').$type<Record<string, any>>(),
-  success: boolean('success').default(true),
-  duration: integer('duration'), // in milliseconds
-  createdAt: timestamp('created_at').defaultNow()
+  title: text('title').notNull(),
+  content: text('content'),
+  productId: integer('product_id').references(() => shopifySyncProducts.id, { onDelete: 'set null' }),
+  applicationId: integer('application_id').references(() => productApplications.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
-// Agent configurations
+// --- Marketing Schema Tables ---
 export const agentConfigurations = marketingSchema.table('agent_configurations', {
   id: serial('id').primaryKey(),
   agent_type: varchar('agent_type', { length: 100 }).notNull().unique(),
@@ -261,97 +235,135 @@ export const agentConfigurations = marketingSchema.table('agent_configurations',
   default_parameters: jsonb('default_parameters'),
   output_parser_type: varchar('output_parser_type', { length: 50 }),
   is_active: boolean('is_active').default(true),
-  createdAt: timestamp('created_at').defaultNow(),
-  updatedAt: timestamp('updated_at').defaultNow()
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
-// Relations
-export const productsRelations = relations(products, ({ many }) => ({
-  applications: many(productApplications),
-  blogPosts: many(blogPosts),
-  queueItems: many(contentQueue)
+// Zod schema for blog_outline data stored in content_pipeline
+export const BlogOutlineDataSchema = z.object({
+  final_title: z.string(),
+  target_audience_persona: z.string(),
+  primary_goal_of_article: z.string(),
+  seo_meta_description: z.string(),
+  seo_primary_keyword: z.string(),
+  seo_secondary_keywords: z.array(z.string()),
+  estimated_total_word_count: z.number().int(),
+  introduction_summary: z.string(),
+  sections: z.array(
+    z.object({
+      section_title: z.string(),
+      estimated_word_count_section: z.number().int(),
+      objective: z.string(),
+      key_sub_points_or_questions: z.array(z.string()),
+      suggested_h3_headings: z.array(z.string()).optional(),
+      supporting_rag_themes_or_keywords: z.array(z.string()).optional(),
+      key_takeaway_for_section: z.string(),
+    })
+  ),
+  conclusion_summary: z.string(),
+  call_to_action: z.object({
+    text: z.string(),
+    link_placeholder: z.string(),
+  }),
+  tone_and_style_notes: z.string(),
+});
+export type BlogOutlineData = z.infer<typeof BlogOutlineDataSchema>;
+
+// Zod schema for blog_idea data
+export const BlogIdeaDataSchema = z.object({
+    suggested_title: z.string(),
+    target_audience_segment: z.string(),
+    core_concept: z.string(),
+    key_points_suggestion: z.array(z.string()),
+    novelty_justification: z.string(),
+    primary_benefit_for_reader: z.string(),
+    estimated_search_intent: z.string(),
+    // Added fields to match innovatorAgent output
+    source_focus: z.string().optional(), // To track what the idea was based on
+});
+export type BlogIdeaData = z.infer<typeof BlogIdeaDataSchema>;
+
+export const contentPipeline = marketingSchema.table('content_pipeline', {
+  id: serial('id').primaryKey(),
+  task_type: varchar('task_type', { length: 100 }).notNull(), // e.g., 'blog_idea', 'blog_outline', 'blog_section_content', 'blog_draft_assembly'
+  status: varchar('status', { length: 50 }).default('pending').notNull(),
+  source_document_ids: integer('source_document_ids').array(),
+  source_chunk_ids: integer('source_chunk_ids').array(),
+  related_pipeline_id: integer('related_pipeline_id'), // Self-reference without foreign key constraint
+  parent_task_id: integer('parent_task_id'), // Self-reference without foreign key constraint
+  title: text('title'), // Can be null if not applicable (e.g. for an array of ideas)
+  summary: text('summary'),
+  keywords: jsonb('keywords').$type<string[]>(),
+  target_audience: text('target_audience'),
+  data: jsonb('data').notNull(), // This will hold BlogIdeaData[], BlogOutlineData, or Markdown string for sections/draft
+  assigned_to_agent_id: varchar('assigned_to_agent_id', { length: 100 }),
+  priority: integer('priority').default(0),
+  notes_for_review: text('notes_for_review'),
+  error_message: text('error_message'),
+  created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  completed_at: timestamp('completed_at', { withTimezone: true }),
+}, (table) => ({
+  idx_marketing_content_pipeline_task_type_status: index('idx_marketing_content_pipeline_task_type_status').on(table.task_type, table.status),
+  idx_marketing_content_pipeline_priority: index('idx_marketing_content_pipeline_priority').on(table.priority),
+  idx_content_pipeline_related_id: index('idx_content_pipeline_related_id_idx').on(table.related_pipeline_id), // Renamed for consistency
+  idx_content_pipeline_parent_id: index('idx_content_pipeline_parent_id_idx').on(table.parent_task_id),     // Renamed
+}));
+
+// --- Marketing Schema Relations ---
+export const productsRelations = relations(shopifySyncProducts, ({ many }) => ({
+  applications: many(productApplications, { relationName: 'ProductToApplications' }),
+  blogPosts: many(blogPosts, { relationName: 'ProductToBlogPosts' }),
+  // queueItems: many(contentQueue) // contentQueue is in public schema in user DDL
 }));
 
 export const productApplicationsRelations = relations(productApplications, ({ one, many }) => ({
-  product: one(products, {
+  product: one(shopifySyncProducts, {
     fields: [productApplications.productId],
-    references: [products.id],
+    references: [shopifySyncProducts.id],
+    relationName: 'ProductToApplications'
   }),
-  blogPosts: many(blogPosts),
+  blogPosts: many(blogPosts, { relationName: 'ApplicationToBlogPosts' }),
 }));
 
 export const blogPostsRelations = relations(blogPosts, ({ one, many }) => ({
-  product: one(products, {
+  product: one(shopifySyncProducts, {
     fields: [blogPosts.productId],
-    references: [products.id],
+    references: [shopifySyncProducts.id],
+    relationName: 'ProductToBlogPosts'
   }),
   application: one(productApplications, {
     fields: [blogPosts.applicationId],
     references: [productApplications.id],
+    relationName: 'ApplicationToBlogPosts'
   }),
-  videos: many(videos)
+  // videos: many(videos) // Assuming 'videos' table exists and is defined elsewhere if needed
 }));
 
-export const videosRelations = relations(videos, ({ one, many }) => ({
-  blogPost: one(blogPosts, {
-    fields: [videos.blogPostId],
-    references: [blogPosts.id]
-  }),
-  product: one(products, {
-    fields: [videos.productId],
-    references: [products.id]
-  }),
-  videoPersona: one(videoPersonas, {
-    fields: [videos.videoPersonaId],
-    references: [videoPersonas.id]
-  }),
-  segments: many(videoSegments),
+export const contentPipelineRelations = relations(contentPipeline, ({ one, many }) => ({
+    relatedTask: one(contentPipeline, {
+        fields: [contentPipeline.related_pipeline_id],
+        references: [contentPipeline.id],
+        relationName: 'PreviousStageTask'
+    }),
+    parentTask: one(contentPipeline, {
+        fields: [contentPipeline.parent_task_id],
+        references: [contentPipeline.id],
+        relationName: 'ParentTaskForSubtask'
+    }),
+    subTasks: many(contentPipeline, {
+        relationName: 'ParentTaskForSubtask'
+    })
 }));
 
-export const videoSegmentsRelations = relations(videoSegments, ({ one }) => ({
-  video: one(videos, {
-    fields: [videoSegments.videoId],
-    references: [videos.id],
-  }),
-  sourceBlogPost: one(blogPosts, {
-    fields: [videoSegments.source_blog_post_id],
-    references: [blogPosts.id],
-  }),
-  sourceProduct: one(products, {
-    fields: [videoSegments.source_product_id],
-    references: [products.id],
-  }),
-  sourceApplication: one(productApplications, {
-    fields: [videoSegments.source_application_id],
-    references: [productApplications.id],
-  }),
-}));
-
-// Types
-export type Product = typeof products.$inferSelect;
-export type NewProduct = typeof products.$inferInsert;
-export type ProductApplications = typeof productApplications.$inferSelect;
+// --- Types for Agents and Operations ---
+export type Product = typeof shopifySyncProducts.$inferSelect;
+export type NewProduct = typeof shopifySyncProducts.$inferInsert;
+export type ProductApplication = typeof productApplications.$inferSelect; // singular for consistency
 export type BlogPost = typeof blogPosts.$inferSelect;
-export type Video = typeof videos.$inferSelect;
-export type QueueItem = typeof contentQueue.$inferSelect;
-export type VideoPersona = typeof videoPersonas.$inferSelect;
-export type VideoSegment = typeof videoSegments.$inferSelect;
+// Video related types (if/when video tables are fully defined in marketing schema)
+// export type Video = typeof videos.$inferSelect;
+// export type VideoPersona = typeof videoPersonas.$inferSelect;
+// export type VideoSegment = typeof videoSegments.$inferSelect;
 
-// Content Pipeline
-export const contentPipeline = marketingSchema.table('content_pipeline', {
-  id: serial('id').primaryKey(),
-  task_type: varchar('task_type', { length: 50 }).notNull(),
-  status: varchar('status', { length: 20 }).$type<'pending' | 'in_progress' | 'completed' | 'failed' | 'error'>().default('pending'),
-  title: varchar('title', { length: 255 }).notNull(),
-  summary: text('summary'),
-  target_audience: varchar('target_audience', { length: 255 }),
-  data: jsonb('data').$type<Record<string, any>>(),
-  source_chunk_ids: integer('source_chunk_ids').array(),
-  source_document_ids: integer('source_document_ids').array(),
-  related_pipeline_id: integer('related_pipeline_id'),
-  keywords: jsonb('keywords').$type<string[]>(),
-  error_message: text('error_message'),
-  completed_at: timestamp('completed_at'),
-  createdAt: timestamp('created_at').defaultNow(),
-  updatedAt: timestamp('updated_at').defaultNow()
-}); 
+export type ContentPipelineTask = typeof contentPipeline.$inferSelect; 

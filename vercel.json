@@ -1,0 +1,16 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/process-pipeline",
+      "schedule": "*/10 * * * *"
+    }
+  ],
+  "functions": {
+    "src/app/api/cron/process-pipeline/route.ts": {
+      "maxDuration": 60
+    }
+  },
+  "env": {
+    "CRON_SECRET": "@cron-secret"
+  }
+} 
