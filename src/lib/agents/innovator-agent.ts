@@ -1,204 +1,265 @@
 import { db } from '../db';
-import { agentConfigurations, contentPipeline, shopifySyncProducts, blogPosts, productApplications } from '../db/schema';
-import { eq, ilike, or, and, sql, desc } from 'drizzle-orm';
-import { type BlogIdeaData } from '../db/schema';
+import { agentConfigurations, contentPipeline, shopifySyncProducts } from '../db/schema';
+import { eq, sql, ilike, or } from 'drizzle-orm';
 
-const APP_API_BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || `https://${process.env.VERCEL_URL || 'localhost:3000'}`;
+const APP_API_BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || `https://${process.env.VERCEL_URL}`;
 
 interface InnovatorInput {
-  focusType: 'enriched_product_id' | 'general_theme';
-  focusValue: string; // Product ID string or theme string
+  focusType: 'chemical' | 'product_category' | 'general_theme';
+  focusValue: string;
   targetAudience: string;
-  numIdeasPerApplication?: number; // Number of ideas per application (for product-focused generation)
+  numIdeasPerApplication?: number; 
 }
 
+interface BlogIdea {
+  application: string;
+  potential_blog_angles: string[];
+  target_audience_suggestion?: string;
+}
+
+const DEFAULT_INNOVATOR_CONFIG = {
+  llm_model_name: 'gemini-2.5-pro-preview-05-06',
+  base_prompt: `You are an expert chemical marketing content ideation AI. Your goal is to generate blog topic ideas.
+FOCUS: {{FOCUS_VALUE}}
+TARGET AUDIENCE: {{TARGET_AUDIENCE}}
+
+ADDITIONAL CONTEXT (Use if relevant, otherwise generate based on FOCUS and AUDIENCE):
+Product Data (if any specific product mentioned in FOCUS):
+{{SHOPIFY_PRODUCT_INFO}}
+Research Context (from internal knowledge base):
+{{RAG_CONTEXT}}
+
+Based on all the information, generate 3-5 main application areas or sub-categories related to the FOCUS. For each area, provide 2-3 distinct and actionable blog topic ideas ("potential_blog_angles").
+If the FOCUS is general (e.g., "General Chemical Topics"), the "application" field should represent broader chemical categories or themes.
+
+Output Format Rules:
+1.  You MUST return ONLY a valid JSON array.
+2.  DO NOT include any text before or after the JSON array.
+3.  DO NOT use markdown code block indicators like \`\`\`json or \`\`\`.
+4.  The JSON array must follow this exact structure:
+[
+  {
+    "application": "Specific Application or Category Name for {{FOCUS_VALUE}}",
+    "potential_blog_angles": [
+      "Angle 1: How {{FOCUS_VALUE}} Solves X for {{TARGET_AUDIENCE}}",
+      "Angle 2: Advanced Techniques with {{FOCUS_VALUE}} in Y",
+      "Angle 3: Future Trends of {{FOCUS_VALUE}} Impacting Z"
+    ],
+    "target_audience_suggestion": "Optional: Refined audience for this specific application angle"
+  }
+  // ... more objects like this
+]
+Ensure each "application" string is descriptive. Ensure each "potential_blog_angles" array contains specific and compelling topic titles.`,
+  default_parameters: {
+    temperature: 0.4, 
+    max_tokens: 8000
+  }
+};
+
+// Regex to extract JSON array, allows for some surrounding text.
+// It looks for the outermost square brackets that contain objects.
+const JSON_ARRAY_REGEX = /\[\s*(\{[\s\S]*?\})\s*(,\s*\{[\s\S]*?\})*\s*\]/;
+
 export async function runInnovatorAgent(input: InnovatorInput) {
-  console.log(`Innovator Agent started for: ${input.focusType} - ${input.focusValue}`);
+  const agentContext = `InnovatorAgent for focusValue="${input.focusValue}", type="${input.focusType}"`;
+  console.log(`[${agentContext}] Started.`);
+  let rawLlmResponseText = "LLM call did not complete or returned no text.";
+
   try {
-    // 1. Fetch Agent Configuration
-    const agentConfig = await db.query.agentConfigurations.findFirst({
+    const agentConfigFromDb = await db.query.agentConfigurations.findFirst({
       where: eq(agentConfigurations.agent_type, 'innovator')
     });
-    if (!agentConfig || !agentConfig.base_prompt) throw new Error("Innovator agent configuration or base_prompt not found.");
+    
+    const agentConfig = agentConfigFromDb || DEFAULT_INNOVATOR_CONFIG;
+    
+    if (!agentConfigFromDb) {
+      console.log(`[${agentContext}] No DB config found, using default Innovator Agent config.`);
+    }
 
-    let ragContextString = "No specific RAG context retrieved for this focus.";
-    let shopifyProductInfoString = "No specific product data loaded for this focus.";
-    let product: typeof shopifySyncProducts.$inferSelect | undefined;
-    let productApplications: typeof productApplications.$inferSelect[] = [];
+    const ragQuery = `Potential applications, key considerations, and interesting facts about ${input.focusValue} relevant to ${input.targetAudience}`;
+    console.log(`[${agentContext}] Performing RAG query: "${ragQuery}"`);
+    const ragResponse = await fetch(`${APP_API_BASE_URL}/api/rag/query`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: ragQuery, topK: 3 }),
+    });
 
-    // 2. Gather Context based on focusType
-    if (input.focusType === 'enriched_product_id') {
-        // Find the product by internal database ID (not Shopify ID)
-        product = await db.query.shopifySyncProducts.findFirst({
-            where: eq(shopifySyncProducts.id, parseInt(input.focusValue))
-        });
-        if (!product) throw new Error(`Product with ID ${input.focusValue} not found.`);
-        
-        // Get enriched product applications
-        productApplications = await db.query.productApplications.findMany({
-            where: eq(productApplications.productId, product.id),
-            limit: 10
-        });
-        
-        shopifyProductInfoString = `Product: ${product.title}\nDescription: ${product.description?.substring(0, 200)}...\nTags: ${product.tags}\nCAS: ${product.casNumber}\nFormula: ${product.chemicalFormula}`;
-        
-        if (productApplications.length > 0) {
-            shopifyProductInfoString += `\n\nEnriched Applications:\n${productApplications.map(app => 
-                `- ${app.application}: ${app.description?.substring(0, 100)}...`
-            ).join('\n')}`;
-        }
-        
-        // For RAG integration, you'll need to implement the RAG client
-        // const productRagQuery = `Detailed information, common questions, and unique applications for chemical product: ${product.title} (CAS: ${product.casNumber}) and its applications: ${productApplications.map(a => a.application).join(', ')}.`;
-        // const ragResult = await ragApiClient.search(productRagQuery, 5);
-        // if (ragResult.results.length > 0) {
-        //     ragContextString = ragResult.results.map(c => `Source: ${c.source_document_name || 'General Info'}\nContent: ${c.content}`).join("\n\n---\n\n");
-        // }
-
-    } else { // general_theme
-        // const genericRagQuery = `Potential applications, key considerations, and market trends for theme "${input.focusValue}" relevant to ${input.targetAudience}`;
-        // const ragResult = await ragApiClient.search(genericRagQuery, 7);
-        // if (ragResult.results.length > 0) {
-        //    ragContextString = ragResult.results.map(c => `Source: ${c.source_document_name || 'General Info'}\nContent: ${c.content}`).join("\n\n---\n\n");
-        // }
-
-        // For general themes, we can still look for related products
-        const relatedProducts = await db.query.shopifySyncProducts.findMany({
+    let ragContextString = "No specific RAG context available for this focus.";
+    if (ragResponse.ok) {
+      const ragData = await ragResponse.json();
+      const ragContextChunks: any[] = ragData.chunks || [];
+      if (ragContextChunks.length > 0) {
+        ragContextString = ragContextChunks.map(c => `Source: ${c.document_name || 'Unknown Source'}\nContent Snippet: ${c.content.substring(0, 250)}...`).join("\n\n---\n\n");
+        console.log(`[${agentContext}] RAG context fetched (${ragContextChunks.length} chunks).`);
+      } else {
+        console.log(`[${agentContext}] RAG query successful but returned no chunks.`);
+      }
+    } else {
+      console.warn(`[${agentContext}] RAG query failed (Status: ${ragResponse.status}, Body: ${await ragResponse.text()}). Proceeding without RAG context.`);
+    }
+    
+    let shopifyProductInfoString = "No specific product data directly matching focus value found.";
+    if (input.focusType === 'chemical' || input.focusType === 'product_category') {
+        console.log(`[${agentContext}] Querying Shopify products for focusValue: "${input.focusValue}"`);
+        const products = await db.query.shopifySyncProducts.findMany({
             where: or(
                 ilike(shopifySyncProducts.title, `%${input.focusValue}%`),
                 ilike(shopifySyncProducts.tags, `%${input.focusValue}%`),
                 ilike(shopifySyncProducts.productType, `%${input.focusValue}%`)
             ),
-            limit: 3
+            limit: 2
         });
-        if (relatedProducts.length > 0) {
-            shopifyProductInfoString = relatedProducts.map(p => `Product: ${p.title}\nDescription: ${p.description?.substring(0, 100)}...\nTags: ${p.tags}`).join("\n---\n");
+        if (products.length > 0) {
+            shopifyProductInfoString = products.map(p => `Product: ${p.title}\nDescription: ${p.description?.substring(0, 100)}...\nTags: ${p.tags}`).join("\n---\n");
+            console.log(`[${agentContext}] Found ${products.length} Shopify products for context.`);
+        } else {
+            console.log(`[${agentContext}] No Shopify products found matching "${input.focusValue}".`);
         }
     }
-
-    // 3. Fetch existing content titles to avoid duplicates
-    const existingBlogTitles = (await db.select({ title: blogPosts.title }).from(blogPosts)
-        .where(or(
-            product ? eq(blogPosts.productId, product.id) : undefined, // If product specific, check its blogs
-            ilike(blogPosts.title, `%${input.focusValue}%`) // General check
-        ))
-        .orderBy(desc(blogPosts.createdAt))
-        .limit(50)
-    ).map(r => r.title).filter(Boolean) as string[];
-
-    const pendingIdeaTitles = (await db.select({ title: contentPipeline.title }).from(contentPipeline)
-        .where(and(
-            or(
-                eq(contentPipeline.task_type, 'blog_idea'),
-                eq(contentPipeline.task_type, 'blog_outline')
-            ),
-            product ? sql`${contentPipeline.data} ->> 'source_product_id' = ${product.id}` : undefined, // crude check if product_id is in data
-            ilike(contentPipeline.title, `%${input.focusValue}%`)
-        ))
-        .limit(50)
-    ).map(r => r.title).filter(Boolean) as string[];
     
-    const allExistingTitles = [...new Set([...existingBlogTitles, ...pendingIdeaTitles])];
-
-    // 4. Calculate total ideas to generate
-    const numIdeasPerApp = input.numIdeasPerApplication || 2;
-    const totalIdeas = input.focusType === 'enriched_product_id' && productApplications.length > 0 
-        ? productApplications.length * numIdeasPerApp 
-        : numIdeasPerApp;
-
-    // 5. Construct LLM Prompt
     let llmPrompt = agentConfig.base_prompt
-        .replace('{{NUM_IDEAS}}', totalIdeas.toString())
-        .replace('{{FOCUS_VALUE}}', input.focusValue)
-        .replace('{{TARGET_AUDIENCE}}', input.targetAudience)
+        .replace(new RegExp('{{FOCUS_VALUE}}', 'g'), input.focusValue)
+        .replace(new RegExp('{{TARGET_AUDIENCE}}', 'g'), input.targetAudience)
         .replace('{{RAG_CONTEXT}}', ragContextString)
-        .replace('{{SHOPIFY_PRODUCT_INFO}}', shopifyProductInfoString)
-        .replace('{{EXISTING_CONTENT_TITLES}}', allExistingTitles.length > 0 ? allExistingTitles.join('\n - ') : 'N/A (Treat as clean slate for this focus value)');
+        .replace('{{SHOPIFY_PRODUCT_INFO}}', shopifyProductInfoString);
     
-    // Add specific context for enriched products
-    if (input.focusType === 'enriched_product_id' && productApplications.length > 0) {
-        llmPrompt += `\n\nSPECIAL INSTRUCTIONS: Generate ${numIdeasPerApp} blog ideas for EACH of the following applications:\n${productApplications.map(app => `- ${app.application}: ${app.description}`).join('\n')}\n\nEach idea should be specifically tailored to that application's use case and target audience needs.`;
-    }
-    
-    // 6. Call Generic Text Generation API (using the new /api/generate/text structure)
     const llmParams = agentConfig.default_parameters || {};
-    const generationResponse = await fetch(`${APP_API_BASE_URL}/api/generate/text`, {
+    console.log(`[${agentContext}] Calling LLM via /api/generate/text. Model: ${agentConfig.llm_model_name}. Prompt length: ${llmPrompt.length}.`);
+
+    const generationApiResponse = await fetch(`${APP_API_BASE_URL}/api/generate/text`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         prompt: llmPrompt,
-        model: agentConfig.llm_model_name, // Ensure this is a model your API supports
-        ...llmParams // Spread default params like temperature, max_tokens
+        model: agentConfig.llm_model_name,
+        ...llmParams
       }),
     });
 
-    if (!generationResponse.ok) {
-      const errorText = await generationResponse.text();
-      console.error("Innovator Agent LLM Error:", errorText);
-      throw new Error(`LLM generation failed: ${generationResponse.status} ${errorText}`);
+    const generationApiResult = await generationApiResponse.json();
+
+    if (!generationApiResponse.ok || !generationApiResult.success) {
+      rawLlmResponseText = generationApiResult.generatedText || generationApiResult.details || "LLM API call itself reported failure.";
+      console.error(`[${agentContext}] LLM /api/generate/text call FAILED. Status: ${generationApiResponse.status}. API Result:`, generationApiResult);
+      throw new Error(`LLM generation failed: ${generationApiResult.error || rawLlmResponseText}`);
     }
-    const generationData = await generationResponse.json();
     
-    // 7. Parse LLM Output (expecting an array of idea objects based on the new prompt)
-    let ideas: BlogIdeaData[];
+    rawLlmResponseText = generationApiResult.generatedText;
+    console.log(`[${agentContext}] Raw LLM Response Text Received:`, `"${rawLlmResponseText}"`);
+    
+    let ideas: BlogIdea[];
     try {
-        // If the LLM is wrapped in a {"generatedText": "..."} structure by your API
-        const rawJson = typeof generationData.generatedText === 'string' ? generationData.generatedText : JSON.stringify(generationData.generatedText);
-        ideas = JSON.parse(rawJson); 
-        if (!Array.isArray(ideas)) { // Ensure it's an array
-            // If the model directly returns the array as the root of generatedText (unlikely with json_object mode for the model)
-            // or if it returns an object with a key containing the array. Adjust based on actual API response.
-            // For now, we assume the JSON string itself is the array.
-            console.warn("LLM output was not an array as expected, attempting to find an array within the object.");
-            const ideasArrayKey = Object.keys(ideas).find(key => Array.isArray((ideas as any)[key]));
-            if (ideasArrayKey) {
-                ideas = (ideas as any)[ideasArrayKey];
-            } else {
-                 throw new Error("LLM output was not a JSON array of ideas and no array found in object keys.");
-            }
+      if (!rawLlmResponseText || rawLlmResponseText.trim() === "") {
+        console.warn(`[${agentContext}] LLM returned an empty or whitespace-only string from /api/generate/text.`);
+        throw new Error("Empty or whitespace-only LLM response received by agent.");
+      }
+
+      let textToParse = rawLlmResponseText.trim();
+      
+      const match = textToParse.match(JSON_ARRAY_REGEX);
+      if (match && match[0]) {
+        textToParse = match[0];
+        console.log(`[${agentContext}] Extracted JSON candidate via regex: "${textToParse}"`);
+      } else {
+        textToParse = textToParse.replace(/^```json\s*/i, '').replace(/\s*```$/i, '');
+        textToParse = textToParse.replace(/^```\s*/i, '').replace(/\s*```$/i, '');
+        console.log(`[${agentContext}] Text after basic cleaning (no regex match for array): "${textToParse}"`);
+      }
+
+      if (!textToParse.startsWith('[') || !textToParse.endsWith(']')) {
+        console.warn(`[${agentContext}] Text for parsing does not appear to be a JSON array after cleaning: "${textToParse}"`);
+        if (textToParse.startsWith('{') && textToParse.endsWith('}')) {
+            console.warn(`[${agentContext}] Attempting to parse as single object and wrap in array.`);
+            const singleObject = JSON.parse(textToParse);
+            ideas = [singleObject];
+        } else {
+            throw new Error("LLM response is not in the expected JSON array or object format after cleaning.");
         }
+      } else {
+        ideas = JSON.parse(textToParse);
+      }
+        
+      if (!Array.isArray(ideas)) {
+        console.warn(`[${agentContext}] Parsed response was not an array, wrapping it. Parsed:`, ideas);
+        ideas = [ideas];
+      }
+      
+      if (ideas.length === 0 || !ideas.every(idea => idea.application && idea.potential_blog_angles && Array.isArray(idea.potential_blog_angles))) {
+        console.warn(`[${agentContext}] Parsed JSON has invalid idea structure or is empty array. Ideas:`, ideas);
+        throw new Error("Invalid idea structure in parsed JSON or empty array returned.");
+      }
+      
+      console.log(`[${agentContext}] Successfully parsed ${ideas.length} blog idea sets.`);
+        
     } catch (parseError) {
-        console.error("Innovator Agent: Failed to parse LLM JSON output:", generationData.generatedText || generationData);
-        throw new Error(`LLM output was not valid JSON or not the expected array structure. Error: ${parseError}`);
+      console.error(`[${agentContext}] Failed to parse LLM JSON output. Raw text from /api/generate/text was: "${rawLlmResponseText}"`);
+      console.error(`[${agentContext}] Parse error details:`, parseError);
+      
+      const fallbackApplication = `${input.focusValue} - Key Topics (Fallback)`;
+      ideas = [{
+        application: fallbackApplication,
+        potential_blog_angles: [
+          `Comprehensive Guide to ${input.focusValue} for ${input.targetAudience}`,
+          `Exploring Applications of ${input.focusValue} in Various Industries`,
+          `Safety, Handling, and Best Practices for ${input.focusValue}`,
+          `The Future of ${input.focusValue}: Innovations, Research, and Market Trends`,
+          `Troubleshooting and Optimizing Processes with ${input.focusValue}`
+        ],
+        target_audience_suggestion: input.targetAudience
+      }];
+      console.log(`[${agentContext}] Using fallback ideas due to parse error or empty/invalid LLM response.`);
     }
 
-    // 8. Store in marketing.content_pipeline
-    let ideasStoredCount = 0;
+    let storedCount = 0;
     for (const idea of ideas) {
-      if (!idea.suggested_title || !idea.core_concept) {
-        console.warn("Innovator Agent: Skipping incomplete idea from LLM:", idea);
+      if (!idea.application || !idea.potential_blog_angles) {
+        console.warn(`[${agentContext}] Skipping invalid idea structure during DB insertion:`, idea);
         continue;
       }
-      const dataPayload: BlogIdeaData = {
-        ...idea,
-        source_focus: input.focusValue // Add the original focus value
-      };
-
-      await db.insert(contentPipeline)
-        .values({
-          task_type: 'blog_idea',
-          status: 'pending',
-          title: idea.suggested_title,
-          summary: idea.core_concept,
-          target_audience: idea.target_audience_segment || input.targetAudience,
-          data: dataPayload,
-          source_chunk_ids: [], // TODO: Map RAG chunk IDs if available and relevant per idea
-          source_document_ids: [] // TODO: Map RAG doc IDs
-        })
-        .execute();
-      ideasStoredCount++;
-      console.log(`Innovator Agent: Stored blog idea - "${idea.suggested_title}"`);
+      for (const angle of idea.potential_blog_angles) {
+        await db.insert(contentPipeline)
+          .values({
+            task_type: 'blog_idea',
+            status: 'pending',
+            title: angle,
+            summary: idea.application,
+            target_audience: idea.target_audience_suggestion || input.targetAudience,
+            data: {
+                original_application: idea.application,
+                suggested_title: angle,
+                key_points_suggestion: [],
+                source_focus: input.focusValue,
+                focus_type: input.focusType
+            },
+          })
+          .execute();
+        console.log(`[${agentContext}] Stored blog idea: "${angle}"`);
+        storedCount++;
+      }
     }
-
-    const message = input.focusType === 'enriched_product_id' && productApplications.length > 0
-        ? `${ideasStoredCount} ideas generated for ${productApplications.length} applications (${numIdeasPerApp} per application)`
-        : `${ideasStoredCount} ideas generated for theme: ${input.focusValue}`;
-
-    console.log(`Innovator Agent finished for: ${input.focusValue}. ${message}`);
-    return { success: true, message };
+    console.log(`[${agentContext}] Finished. Stored ${storedCount} blog angles.`);
+    return { success: true, message: `${storedCount} blog angles processed and stored.` };
 
   } catch (error: any) {
-    console.error(`Innovator Agent Error for ${input.focusValue}:`, error);
-    return { success: false, message: error.message };
+    console.error(`[${agentContext}] CRITICAL ERROR. Raw LLM text was: "${rawLlmResponseText}". Error:`, error);
+    try {
+        await db.insert(contentPipeline).values({
+            task_type: 'blog_idea_generation_failed',
+            status: 'error',
+            title: `Failed to generate ideas for ${input.focusValue}`,
+            summary: `Agent error: ${error.message.substring(0, 250)}`,
+            target_audience: input.targetAudience,
+            data: { 
+                focusType: input.focusType, 
+                focusValue: input.focusValue, 
+                error: error.message, 
+                raw_llm_response: rawLlmResponseText.substring(0,1000) 
+            },
+        }).execute();
+        console.log(`[${agentContext}] Logged failure task to content_pipeline.`);
+    } catch (dbError) {
+        console.error(`[${agentContext}] Failed to log failure task to DB:`, dbError);
+    }
+    return { success: false, message: `Innovator Agent failed: ${error.message}` };
   }
 } 

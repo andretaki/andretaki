@@ -1,7 +1,43 @@
-import { pgTable, serial, text, timestamp, jsonb, boolean, integer, varchar, decimal, index, bigint } from 'drizzle-orm/pg-core';
+import {
+  pgTable, serial, text, timestamp, jsonb, boolean, integer, varchar, decimal, index, bigint, smallint, AnyPgColumn,
+  PgTimestampConfig,
+  IndexBuilder,
+  ForeignKeyBuilder,
+  uniqueIndex,
+  customType
+} from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import { z } from 'zod';
-import { pgSchema } from 'drizzle-orm/pg-core';
+import { pgSchema, primaryKey } from 'drizzle-orm/pg-core';
+
+// --- Custom Types for PostgreSQL specific features ---
+const customVector = (name: string, { dimensions }: { dimensions: number }) =>
+  customType<{ data: number[]; driverData: string }>({
+    dataType() {
+      return `vector(${dimensions})`;
+    },
+    toDriver(value: number[]): string {
+      return `[${value.join(',')}]`;
+    },
+    fromDriver(value: string): number[] {
+      if (value === null || typeof value !== 'string') return [];
+      try {
+        const cleanedValue = value.replace(/^\[|\]$/g, '');
+        if (cleanedValue === '') return [];
+        return cleanedValue.split(',').map(v => parseFloat(v.trim()));
+      } catch (e) {
+        console.error(`Error parsing vector string: "${value}"`, e);
+        return [];
+      }
+    },
+  })(name);
+
+const customTsvector = (name: string) =>
+  customType<{ data: string; driverData: string }>({
+    dataType() {
+      return 'tsvector';
+    },
+  })(name);
 
 // Define schemas based on user's DDL
 export const ragSystemSchema = pgSchema('rag_system');
@@ -27,7 +63,10 @@ export const documents = ragSystemSchema.table('documents', {
   document_version: integer('document_version').default(1).notNull(),
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => ({
+  idx_rag_documents_source_type: index('idx_rag_documents_source_type').on(table.source_type),
+  idx_rag_documents_source_identifier: index('idx_rag_documents_source_identifier').on(table.source_identifier),
+}));
 
 export const chunks = ragSystemSchema.table('chunks', {
   id: serial('id').primaryKey(),
@@ -38,18 +77,17 @@ export const chunks = ragSystemSchema.table('chunks', {
   chunk_type: text('chunk_type').default('text').notNull(),
   word_count: integer('word_count'),
   char_count: integer('char_count'),
-  parent_chunk_id: integer('parent_chunk_id'), // Self-reference without foreign key constraint
-  confidence_score: integer('confidence_score').default(70), // smallint maps to integer
+  parent_chunk_id: integer('parent_chunk_id').references((): AnyPgColumn => chunks.id, { onDelete: 'set null' }),
+  confidence_score: smallint('confidence_score').default(70),
   chunk_last_modified: timestamp('chunk_last_modified', { withTimezone: true }).defaultNow().notNull(),
   chunk_version: integer('chunk_version').default(1).notNull(),
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  content_embedding: text('content_embedding').notNull(), // pgvector type, represented as text in Drizzle
+  content_embedding: customVector('content_embedding', { dimensions: 1536 }).notNull(),
   access_control_tags: jsonb('access_control_tags'),
-  content_tsv: text('content_tsv'), // tsvector type, represented as text
+  content_tsv: customTsvector('content_tsv'),
 }, (table) => ({
   idx_rag_chunks_document_id: index('idx_rag_chunks_document_id').on(table.document_id),
   idx_chunks_chunk_hash: index('idx_chunks_chunk_hash').on(table.chunk_hash),
-  // Specific GIN/vector indexes are managed outside Drizzle ORM's typical definitions
 }));
 
 export const syncState = ragSystemSchema.table('sync_state', {
@@ -82,33 +120,28 @@ export const shopifySyncState = ragSystemSchema.table('shopify_sync_state', {
 
 // --- Shopify Sync Data Tables (in rag_system schema as per user DDL) ---
 export const shopifySyncProducts = ragSystemSchema.table('shopify_sync_products', {
-  id: serial('id').primaryKey(), // Internal DB id
-  productId: bigint('product_id', { mode: 'number' }).unique(), // Shopify's product ID
+  id: serial('id').primaryKey(),
+  productId: bigint('product_id', { mode: 'number' }).unique(),
   title: text('title'),
   description: text('description'),
   productType: text('product_type'),
   vendor: text('vendor'),
   handle: text('handle'),
   status: text('status'),
-  tags: text('tags'), // This is a single text field in the DDL, not an array.
+  tags: text('tags'),
   publishedAt: timestamp('published_at', { withTimezone: true }),
-  createdAtShopify: timestamp('created_at', { withTimezone: true }),
-  updatedAtShopify: timestamp('updated_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }),
   variants: jsonb('variants'),
   images: jsonb('images'),
   options: jsonb('options'),
-  metafields: jsonb('metafields'), // Chemical specific data can be stored here.
-  syncDate: timestamp('sync_date', { mode: 'date', withTimezone: false }).notNull(), // date type
-  // Adding chemical-specific fields, assuming they can be added to this table
-  // or are part of the `metafields` jsonb. For typed access, defining them:
-  chemicalFormula: varchar('chemical_formula', { length: 100 }),
-  casNumber: varchar('cas_number', { length: 100 }),
-  properties: jsonb('properties').$type<Record<string, any>>(),
-  safetyInfo: jsonb('safety_info').$type<Record<string, any>>(),
-  // These fields are not in the user's DDL for shopify_sync_products, but were in original schema.
-  // They might be better in a separate `marketing.products` table that links to this one.
-  // For now, adding them here to match the `Product` type used by agents.
-});
+  metafields: jsonb('metafields'),
+  syncDate: timestamp('sync_date', { mode: 'date', withTimezone: false }).notNull(),
+}, (table) => ({
+  idx_shopify_products_updated_at: index('idx_shopify_products_updated_at').on(table.updatedAt),
+  idx_shopify_products_handle: index('idx_shopify_products_handle').on(table.handle),
+  idx_shopify_products_id: index('idx_shopify_products_id').on(table.productId),
+}));
 
 export const shopifySyncCustomers = ragSystemSchema.table('shopify_sync_customers', {
   id: serial('id').primaryKey(),
@@ -204,7 +237,10 @@ export const shopifySyncBlogArticles = ragSystemSchema.table('shopify_sync_blog_
     template_suffix: text('template_suffix'),
     sync_date: timestamp('sync_date', { mode: 'date', withTimezone: false }).notNull(),
 }, (table) => ({
-    unique_blog_article: index('unique_blog_article_idx').on(table.blog_id, table.article_id), // Drizzle doesn't support unique constraints directly in table def like this, but index can be unique
+    unique_blog_article_idx: uniqueIndex('unique_blog_article_idx').on(table.blog_id, table.article_id),
+    idx_shopify_blog_articles_updated_at: index('idx_shopify_blog_articles_updated_at').on(table.updated_at),
+    idx_shopify_blog_articles_published_at: index('idx_shopify_blog_articles_published_at').on(table.published_at),
+    idx_shopify_blog_articles_handle: index('idx_shopify_blog_articles_handle').on(table.handle),
 }));
 
 // Need to define these tables that are referenced in relations
@@ -213,8 +249,17 @@ export const productApplications = marketingSchema.table('product_applications',
   productId: integer('product_id').references(() => shopifySyncProducts.id, { onDelete: 'cascade' }).notNull(),
   application: text('application').notNull(),
   description: text('description'),
+  targetAudience: text('target_audience'),
+  marketPotential: text('market_potential'),
+  technicalComplexity: text('technical_complexity'),
+  industry: text('industry'),
+  useCase: text('use_case'),
+  creativity: integer('creativity'),
+  technicalDetails: text('technical_details'),
   created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => ({
+  idx_product_applications_product_id: index('idx_product_applications_product_id').on(table.productId),
+}));
 
 export const blogPosts = marketingSchema.table('blog_posts', {
   id: serial('id').primaryKey(),
@@ -222,9 +267,21 @@ export const blogPosts = marketingSchema.table('blog_posts', {
   content: text('content'),
   productId: integer('product_id').references(() => shopifySyncProducts.id, { onDelete: 'set null' }),
   applicationId: integer('application_id').references(() => productApplications.id, { onDelete: 'set null' }),
+  slug: text('slug'),
+  outline: jsonb('outline'),
+  status: varchar('status', { length: 50 }).default('draft'),
+  metaDescription: text('meta_description'),
+  keywords: jsonb('keywords'),
+  wordCount: integer('word_count'),
+  type: varchar('type', { length: 50 }),
+  metadata: jsonb('metadata'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => ({
+  idx_blog_posts_product_id: index('idx_blog_posts_product_id').on(table.productId),
+  idx_blog_posts_application_id: index('idx_blog_posts_application_id').on(table.applicationId),
+  idx_blog_posts_created_at: index('idx_blog_posts_created_at').on(table.createdAt),
+}));
 
 // --- Marketing Schema Tables ---
 export const agentConfigurations = marketingSchema.table('agent_configurations', {
@@ -289,11 +346,11 @@ export const contentPipeline = marketingSchema.table('content_pipeline', {
   status: varchar('status', { length: 50 }).default('pending').notNull(),
   source_document_ids: integer('source_document_ids').array(),
   source_chunk_ids: integer('source_chunk_ids').array(),
-  related_pipeline_id: integer('related_pipeline_id'), // Self-reference without foreign key constraint
-  parent_task_id: integer('parent_task_id'), // Self-reference without foreign key constraint
+  related_pipeline_id: integer('related_pipeline_id').references(():AnyPgColumn => contentPipeline.id, { onDelete: 'set null' }),
+  parent_task_id: integer('parent_task_id').references(():AnyPgColumn => contentPipeline.id, { onDelete: 'set null' }),
   title: text('title'), // Can be null if not applicable (e.g. for an array of ideas)
   summary: text('summary'),
-  keywords: jsonb('keywords').$type<string[]>(),
+  keywords: jsonb('keywords'),
   target_audience: text('target_audience'),
   data: jsonb('data').notNull(), // This will hold BlogIdeaData[], BlogOutlineData, or Markdown string for sections/draft
   assigned_to_agent_id: varchar('assigned_to_agent_id', { length: 100 }),
@@ -305,9 +362,9 @@ export const contentPipeline = marketingSchema.table('content_pipeline', {
   completed_at: timestamp('completed_at', { withTimezone: true }),
 }, (table) => ({
   idx_marketing_content_pipeline_task_type_status: index('idx_marketing_content_pipeline_task_type_status').on(table.task_type, table.status),
-  idx_marketing_content_pipeline_priority: index('idx_marketing_content_pipeline_priority').on(table.priority),
-  idx_content_pipeline_related_id: index('idx_content_pipeline_related_id_idx').on(table.related_pipeline_id), // Renamed for consistency
-  idx_content_pipeline_parent_id: index('idx_content_pipeline_parent_id_idx').on(table.parent_task_id),     // Renamed
+  idx_marketing_content_pipeline_priority: index('idx_marketing_content_pipeline_priority_desc').on(table.priority),
+  idx_content_pipeline_related_id_idx: index('idx_content_pipeline_related_id_idx').on(table.related_pipeline_id),
+  idx_content_pipeline_parent_id_idx: index('idx_content_pipeline_parent_id_idx').on(table.parent_task_id),
 }));
 
 // --- Marketing Schema Relations ---
@@ -326,7 +383,7 @@ export const productApplicationsRelations = relations(productApplications, ({ on
   blogPosts: many(blogPosts, { relationName: 'ApplicationToBlogPosts' }),
 }));
 
-export const blogPostsRelations = relations(blogPosts, ({ one, many }) => ({
+export const blogPostsRelations = relations(blogPosts, ({ one }) => ({
   product: one(shopifySyncProducts, {
     fields: [blogPosts.productId],
     references: [shopifySyncProducts.id],

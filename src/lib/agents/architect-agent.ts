@@ -1,7 +1,14 @@
-import { db } from '../../src/lib/db';
-import { agentConfigurations, contentPipeline } from '../../src/lib/db/schema';
+import { db } from '../db';
+import { agentConfigurations, contentPipeline } from '../db/schema';
 import { eq } from 'drizzle-orm';
+
 const APP_API_BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || `https://${process.env.VERCEL_URL}`;
+
+interface BlogIdeaData {
+  suggested_title?: string;
+  source_focus?: string;
+  key_points_suggestion?: string[];
+}
 
 export async function runArchitectAgent(pipelineTaskId: number) {
   console.log(`Architect Agent started for pipeline task ID: ${pipelineTaskId}`);
@@ -14,11 +21,11 @@ export async function runArchitectAgent(pipelineTaskId: number) {
       console.log(`No pending blog idea found for task ID ${pipelineTaskId}`);
       return { success: true, message: "No task found or not in correct state."};
     }
-    const ideaData = blogIdeaTask.data || {};
+    const ideaData = (blogIdeaTask.data || {}) as BlogIdeaData;
 
     // Update status to 'in_progress'
     await db.update(contentPipeline)
-      .set({ status: 'in_progress', updatedAt: new Date() })
+      .set({ status: 'in_progress', updated_at: new Date() })
       .where(eq(contentPipeline.id, pipelineTaskId))
       .execute();
     
@@ -86,7 +93,7 @@ export async function runArchitectAgent(pipelineTaskId: number) {
       .set({ 
         status: 'completed', 
         completed_at: new Date(), 
-        updatedAt: new Date() 
+        updated_at: new Date() 
       })
       .where(eq(contentPipeline.id, pipelineTaskId))
       .execute();
@@ -99,7 +106,7 @@ export async function runArchitectAgent(pipelineTaskId: number) {
       .set({ 
         status: 'error', 
         error_message: error.message, 
-        updatedAt: new Date() 
+        updated_at: new Date() 
       })
       .where(eq(contentPipeline.id, pipelineTaskId))
       .execute();

@@ -1,0 +1,20 @@
+{
+  "version": "5",
+  "dialect": "pg",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1748562871969,
+      "tag": "0000_flat_hemingway",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1748641443220,
+      "tag": "0001_fearless_the_santerians",
+      "breakpoints": true
+    }
+  ]
+}
