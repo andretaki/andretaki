@@ -361,6 +361,8 @@ export const blogPosts = marketingSchema.table('blog_posts', {
   metadata: jsonb('metadata'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  views: integer('views'),
+  engagement: integer('engagement'),
 }, (table) => ({
   idx_blog_posts_product_id: index('idx_blog_posts_product_id').on(table.productId),
   idx_blog_posts_application_id: index('idx_blog_posts_application_id').on(table.applicationId),

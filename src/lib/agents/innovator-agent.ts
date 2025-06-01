@@ -6,7 +6,7 @@ import {
   // We need customVector for type hints if used directly in queries, but it's defined in schema.ts
 } from '../db/schema';
 import { eq, sql, ilike, or, and, desc } from 'drizzle-orm';
-import { ShopifyMetafield } from '../../../lib/shopify'; // For parsing metafields type
+import { ShopifyMetafield } from '@/lib/shopify/client'; // For parsing metafields type
 import { generateGeminiEmbedding, findSimilarTopicsWithPgVector } from '../ai/embedding-client'; // NEW - using the new client
 import { TaskType } from '@google/generative-ai'; // Import TaskType for SEMANTIC_SIMILARITY
 

@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { db } from '../../lib/db';
 import { shopifySyncProducts, shopifySyncState } from '../../lib/db/schema';
-import { getAllShopifyProducts, getShopifyMetafields, ShopifyProduct, ShopifyMetafield } from '../../../lib/shopify';
+import { getAllShopifyProducts, getShopifyMetafields, ShopifyProduct, ShopifyMetafield } from '@/lib/shopify/client';
 import { eq, sql } from 'drizzle-orm';
 
 const syncCommand = new Command('sync');
