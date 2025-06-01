@@ -15,6 +15,13 @@
       "when": 1748641443220,
       "tag": "0001_fearless_the_santerians",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1748741742719,
+      "tag": "0002_organic_chimera",
+      "breakpoints": true
     }
   ]
 }

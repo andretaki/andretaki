@@ -110,13 +110,8 @@ syncCommand
             variants: shopifyProduct.variants as any, // Cast to any if types don't match exactly
             images: shopifyProduct.images as any,
             options: shopifyProduct.options as any,
-            metafields: productMetafields as any, // Store all fetched metafields
+            metafields: productMetafields as any, // Store all fetched metafields (this is where CAS, formula, etc. will be stored raw)
             syncDate: new Date(),
-            // Map chemical-specific data from metafields
-            casNumber: findMetafieldValue(productMetafields, METAFIELD_NAMESPACE_CHEMICAL, METAFIELD_KEY_CAS) as string || null,
-            chemicalFormula: findMetafieldValue(productMetafields, METAFIELD_NAMESPACE_CHEMICAL, METAFIELD_KEY_FORMULA) as string || null,
-            properties: findMetafieldValue(productMetafields, METAFIELD_NAMESPACE_CHEMICAL, METAFIELD_KEY_PROPERTIES) as Record<string, any> || {},
-            safetyInfo: findMetafieldValue(productMetafields, METAFIELD_NAMESPACE_CHEMICAL, METAFIELD_KEY_SAFETY) as Record<string, any> || {},
           };
 
           await db.insert(shopifySyncProducts)
