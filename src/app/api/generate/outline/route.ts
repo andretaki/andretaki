@@ -9,18 +9,24 @@ import {
 } from '../../../../lib/db/schema';
 import { BlogArchitectAgent } from '../../../../lib/agents/blog-architect-agent';
 import { eq, and } from 'drizzle-orm';
+import { GenerateOutlineSchema, formatZodError } from '../../../../lib/validations/api';
 
 const DEFAULT_BASE_AGENT_CONFIG = { model: 'gemini' as const, temperature: 0.5, maxTokens: 8192, retries: 2 };
 
 export async function POST(request: NextRequest) {
-  let body: { pipelineTaskId?: number };
+  let bodyForErrorLogging: any = {}; // For logging in case of early parse failure
   try {
-    body = await request.json();
-    const { pipelineTaskId } = body;
-
-    if (!pipelineTaskId || typeof pipelineTaskId !== 'number') {
-      return NextResponse.json({ success: false, error: 'pipelineTaskId (number) is required.' }, { status: 400 });
+    const rawBody = await request.json();
+    bodyForErrorLogging = rawBody; // Capture for logging if validation fails
+    const validation = GenerateOutlineSchema.safeParse(rawBody);
+    if (!validation.success) {
+      return NextResponse.json({ 
+        success: false, 
+        error: "Invalid input for outline generation", 
+        details: formatZodError(validation.error) 
+      }, { status: 400 });
     }
+    const { pipelineTaskId } = validation.data;
 
     const topicTask = await db.query.contentPipeline.findFirst({
       where: and(eq(contentPipeline.id, pipelineTaskId), eq(contentPipeline.task_type, 'blog_idea'), eq(contentPipeline.status, 'completed'))
@@ -123,7 +129,7 @@ export async function POST(request: NextRequest) {
 
   } catch (error: any) {
     console.error('Error in /api/generate/outline:', error);
-    if (body?.pipelineTaskId) {
+    if (bodyForErrorLogging?.pipelineTaskId) {
       try {
         await db.update(contentPipeline)
           .set({ 
@@ -131,7 +137,7 @@ export async function POST(request: NextRequest) {
             error_message: `Unhandled API error: ${error.message.substring(0,450)}`,
             updated_at: new Date()
           })
-          .where(eq(contentPipeline.id, Number(body.pipelineTaskId)));
+          .where(eq(contentPipeline.id, Number(bodyForErrorLogging.pipelineTaskId)));
       } catch (dbError) {
         console.error("Failed to mark task as error during exception handling:", dbError);
       }

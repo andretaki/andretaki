@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   FileText, 
   Search, 
@@ -27,6 +27,7 @@ import {
   ChevronDown,
   Loader
 } from 'lucide-react';
+import { toast } from 'sonner';
 
 interface BlogPost {
   id: number;
@@ -68,6 +69,62 @@ const getStatusIcon = (status: string) => {
     case 'archived': return <Bookmark className="w-3 h-3" />;
     default: return <FileText className="w-3 h-3" />;
   }
+};
+
+interface BlogRowProps {
+  blog: BlogPost;
+  isSelected: boolean;
+  onSelect: (selected: boolean) => void;
+  onView: () => void;
+  onEdit: () => void;
+}
+
+const BlogRow: React.FC<BlogRowProps> = ({ blog, isSelected, onSelect, onView, onEdit }) => {
+  const {
+    id, title, status, updatedAt, productName, targetAudience,
+    wordCount, metaDescription, views
+  } = blog;
+
+  const formattedDate = (dateString: string) => new Date(dateString).toLocaleDateString('en-US', {
+    year: 'numeric', month: 'short', day: 'numeric'
+  });
+
+  return (
+    <tr className={`${isSelected ? 'bg-indigo-50' : 'hover:bg-gray-50'}`}>
+      <td className="px-4 py-3 whitespace-nowrap">
+        <input 
+          type="checkbox" 
+          checked={isSelected}
+          onChange={(e) => onSelect(e.target.checked)}
+          className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4"
+        />
+      </td>
+      <td className="px-4 py-3 max-w-xs">
+        <div 
+          onClick={onView} 
+          className="text-sm font-medium text-gray-900 hover:text-indigo-600 cursor-pointer truncate" 
+          title={title}
+        >
+          {title}
+        </div>
+        <div className="text-xs text-gray-500 truncate" title={metaDescription}>{metaDescription || "No meta description."}</div>
+      </td>
+      <td className="px-4 py-3 whitespace-nowrap">
+        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${getStatusColor(status)}`}>
+          {getStatusIcon(status)}
+          {status.charAt(0).toUpperCase() + status.slice(1)}
+        </span>
+      </td>
+      <td className="px-4 py-3 whitespace-nowrap text-xs text-gray-500">{formattedDate(updatedAt)}</td>
+      <td className="px-4 py-3 whitespace-nowrap text-xs text-gray-500 truncate" title={productName}>{productName || "N/A"}</td>
+      <td className="px-4 py-3 whitespace-nowrap text-xs text-gray-500">{wordCount}</td>
+      <td className="px-4 py-3 whitespace-nowrap text-xs text-gray-500">{(views ?? 0).toLocaleString()}</td>
+      <td className="px-4 py-3 whitespace-nowrap text-right text-sm font-medium">
+        <button onClick={onView} title="View" className="p-1.5 text-gray-500 hover:text-indigo-600 rounded-md"><Eye size={16} /></button>
+        <button onClick={onEdit} title="Edit" className="p-1.5 text-gray-500 hover:text-emerald-600 rounded-md ml-1"><Edit3 size={16} /></button>
+      </td>
+    </tr>
+  );
 };
 
 export default function BlogManager({ onCreateNew, onViewBlog, onEditBlog }: BlogManagerProps) {
@@ -117,6 +174,7 @@ export default function BlogManager({ onCreateNew, onViewBlog, onEditBlog }: Blo
     } catch (error) {
       console.error('Failed to fetch blogs:', error);
       setError(error instanceof Error ? error.message : String(error));
+      toast.error(`Failed to load blogs: ${error instanceof Error ? error.message : String(error)}`);
       if (!append) setBlogs([]);
     } finally {
       setLoading(false);
@@ -155,7 +213,7 @@ export default function BlogManager({ onCreateNew, onViewBlog, onEditBlog }: Blo
 
   const handleBulkAction = async (action: 'publish' | 'archive' | 'delete') => {
     if (selectedBlogs.length === 0) {
-      alert('Please select at least one blog post.');
+      toast.info("No blogs selected for action.");
       return;
     }
 
@@ -197,11 +255,50 @@ export default function BlogManager({ onCreateNew, onViewBlog, onEditBlog }: Blo
       await Promise.all(promises);
       setSelectedBlogs([]);
       fetchBlogs(); // Refresh the list
-      alert(`Successfully ${action}ed ${selectedBlogs.length} blog post(s).`);
+      toast.success(`Successfully ${action}ed ${selectedBlogs.length} blog post(s).`);
     } catch (error) {
       console.error(`Failed to ${action} blogs:`, error);
-      alert(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      toast.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
     }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedBlogs.length === 0) {
+      toast.info("No blogs selected for deletion.");
+      return;
+    }
+    if (!confirm(`Are you sure you want to delete ${selectedBlogs.length} blog(s)? This action cannot be undone.`)) {
+      return;
+    }
+    setLoading(true);
+    let successes = 0;
+    let failures = 0;
+    const deleteToastId = toast.loading(`Deleting ${selectedBlogs.length} blog(s)...`);
+
+    for (const id of selectedBlogs) {
+      try {
+        const response = await fetch(`/api/blogs/${id}`, { method: 'DELETE' });
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+          throw new Error(data.error || `Failed for blog ID ${id}`);
+        }
+        successes++;
+      } catch (error) {
+        console.error(`Failed to delete blog ID ${id}:`, error);
+        failures++;
+      }
+    }
+    toast.dismiss(deleteToastId);
+
+    if (successes > 0) {
+      toast.success(`${successes} blog(s) deleted successfully.`);
+    }
+    if (failures > 0) {
+      toast.error(`${failures} blog deletion(s) failed. Check console for details.`);
+    }
+    setSelectedBlogs([]);
+    fetchBlogs();
+    setLoading(false);
   };
 
   if (loading && currentPage === 0 && blogs.length === 0) {
@@ -234,11 +331,17 @@ export default function BlogManager({ onCreateNew, onViewBlog, onEditBlog }: Blo
   const SortableHeader = ({ columnKey, children }: { columnKey: string; children: React.ReactNode }) => (
     <button 
       onClick={() => handleSortChange(columnKey)} 
-      className="flex items-center gap-1 hover:text-indigo-600"
+      className="flex items-center gap-1 text-xs font-medium text-gray-500 uppercase tracking-wider hover:text-indigo-600 group"
     >
       {children}
-      {sortBy === columnKey && (
-        sortOrder === 'asc' ? <ChevronUp size={14} /> : <ChevronDown size={14} />
+      {sortBy === columnKey ? (
+        <span className="text-indigo-600">
+          {sortOrder === 'asc' ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </span>
+      ) : (
+        <span className="opacity-0 group-hover:opacity-100 text-gray-400">
+          <ChevronUp size={14} />
+        </span>
       )}
     </button>
   );
@@ -485,6 +588,165 @@ export default function BlogManager({ onCreateNew, onViewBlog, onEditBlog }: Blo
       {loading && currentPage > 0 && (
         <div className="text-center py-4">
           <Loader className="animate-spin w-6 h-6 text-indigo-600 mx-auto" />
+        </div>
+      )}
+
+      {blogs.length > 0 && viewMode === 'list' && (
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th scope="col" className="px-4 py-3 text-left w-12"> 
+                  <input 
+                    type="checkbox" 
+                    className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4"
+                    onChange={(e) => setSelectedBlogs(e.target.checked ? blogs.map(b => b.id) : [])}
+                    checked={blogs.length > 0 && selectedBlogs.length === blogs.length}
+                    ref={input => { 
+                      if (input) input.indeterminate = selectedBlogs.length > 0 && selectedBlogs.length < blogs.length;
+                    }}
+                  />
+                </th>
+                <th scope="col" className="px-4 py-3 text-left">
+                  <SortableHeader columnKey="title">Title</SortableHeader>
+                </th>
+                <th scope="col" className="px-4 py-3 text-left">
+                  <SortableHeader columnKey="status">Status</SortableHeader>
+                </th>
+                <th scope="col" className="px-4 py-3 text-left">
+                  <SortableHeader columnKey="updatedAt">Last Updated</SortableHeader>
+                </th>
+                <th scope="col" className="px-4 py-3 text-left">
+                  <SortableHeader columnKey="productName">Product</SortableHeader>
+                </th>
+                <th scope="col" className="px-4 py-3 text-left">
+                  <SortableHeader columnKey="wordCount">Words</SortableHeader>
+                </th>
+                <th scope="col" className="px-4 py-3 text-left">
+                  <SortableHeader columnKey="views">Views</SortableHeader>
+                </th>
+                <th scope="col" className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {blogs.map((blog) => (
+                <BlogRow
+                  key={blog.id}
+                  blog={blog}
+                  isSelected={selectedBlogs.includes(blog.id)}
+                  onSelect={(selected) => setSelectedBlogs(prev => selected ? [...prev, blog.id] : prev.filter(i => i !== blog.id))}
+                  onView={() => onViewBlog(blog.id)}
+                  onEdit={() => onEditBlog(blog.id)}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {blogs.length > 0 && viewMode === 'grid' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {blogs.map((blog) => (
+            <div
+              key={blog.id}
+              className={`bg-white rounded-xl border overflow-hidden hover:shadow-lg transition-all duration-200 group ${
+                selectedBlogs.includes(blog.id) ? 'border-indigo-500 ring-2 ring-indigo-200' : 'border-gray-200'
+              }`}
+            >
+              <div className="p-5">
+                <div className="flex items-start justify-between mb-2">
+                  <input
+                    type="checkbox"
+                    checked={selectedBlogs.includes(blog.id)}
+                    onChange={(e) => {
+                      const id = blog.id;
+                      setSelectedBlogs(prev => e.target.checked ? [...prev, id] : prev.filter(i => i !== id));
+                    }}
+                    className="w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500"
+                  />
+                  <button className="p-1 text-gray-400 hover:text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <MoreHorizontal className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div 
+                  onClick={() => onViewBlog(blog.id)}
+                  className="text-lg font-semibold text-gray-900 mb-1.5 line-clamp-2 hover:text-indigo-600 cursor-pointer"
+                >
+                  {blog.title}
+                </div>
+
+                <p className="text-xs text-gray-500 mb-2 line-clamp-2" title={blog.metaDescription}>
+                  {blog.metaDescription || "No meta description."}
+                </p>
+
+                <div className="flex items-center gap-1.5 mb-3 flex-wrap">
+                  {blog.keywords.slice(0, 3).map((keyword, index) => (
+                    <span key={index} className="px-2 py-0.5 bg-gray-100 text-gray-700 rounded-md text-xs">
+                      {keyword}
+                    </span>
+                  ))}
+                  {blog.keywords.length > 3 && (
+                    <span className="text-xs text-gray-500">+{blog.keywords.length - 3}</span>
+                  )}
+                </div>
+
+                <div className="text-xs text-gray-500 mb-3">
+                  <p className="flex items-center gap-1">
+                    <Tag className="w-3 h-3" />
+                    Target: {blog.targetAudience}
+                  </p>
+                  <p className="flex items-center gap-1 mt-1">
+                    <FileText className="w-3 h-3" />
+                    Product: {blog.productName}
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-between text-xs text-gray-500 mb-3">
+                  <span className="flex items-center gap-1">
+                    <Calendar className="w-3 h-3" />
+                    {new Date(blog.updatedAt).toLocaleDateString()}
+                  </span>
+                  <span>{blog.wordCount} words</span>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${getStatusColor(blog.status)}`}>
+                    {getStatusIcon(blog.status)}
+                    {blog.status.charAt(0).toUpperCase() + blog.status.slice(1)}
+                  </span>
+
+                  <div className="flex items-center gap-0.5">
+                    <button onClick={() => onViewBlog(blog.id)} title="View" className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors">
+                      <Eye className="w-4 h-4" />
+                    </button>
+                    <button onClick={() => onEditBlog(blog.id)} title="Edit" className="p-2 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors">
+                      <Edit3 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {(blog.views !== undefined || blog.engagement !== undefined) && (
+                  <div className="mt-3 pt-3 border-t border-gray-100">
+                    <div className="flex items-center justify-between text-xs text-gray-500">
+                      {blog.views !== undefined && (
+                        <span className="flex items-center gap-1">
+                          <Eye className="w-3 h-3" />
+                          {blog.views.toLocaleString()} views
+                        </span>
+                      )}
+                      {blog.engagement !== undefined && (
+                        <span className="flex items-center gap-1">
+                          <BarChart3 className="w-3 h-3" />
+                          {blog.engagement}% engagement
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>

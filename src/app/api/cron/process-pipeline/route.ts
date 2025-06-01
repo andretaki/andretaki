@@ -150,7 +150,7 @@ export async function POST(request: NextRequest) {
               eq(proposedTopics.sourceType, 'agent_innovator')
           ))
       ))
-      .orderBy(desc(productApplications.createdAt))
+      .orderBy(desc(productApplications.created_at))
       .limit(CRON_BATCH_LIMIT_TOPIC_PROPOSAL);
 
     if (productsNeedingTopicProposals.length > 0) {
@@ -260,7 +260,7 @@ export async function POST(request: NextRequest) {
 
       // Configure the agent with DB settings or defaults
       const agentConfigForOutline = outlineAgentConfig ? {
-        model: (outlineAgentConfig.llm_model_name.includes('gemini') ? 'gemini' : 'openai') as 'openai' | 'gemini',
+        model: 'gemini' as const,
         temperature: (outlineAgentConfig.default_parameters as any)?.temperature || DEFAULT_BASE_AGENT_CONFIG.temperature,
         maxTokens: (outlineAgentConfig.default_parameters as any)?.maxTokens || DEFAULT_BASE_AGENT_CONFIG.maxTokens,
         retries: (outlineAgentConfig.default_parameters as any)?.retries || DEFAULT_BASE_AGENT_CONFIG.retries,
@@ -268,7 +268,7 @@ export async function POST(request: NextRequest) {
         base_prompt: outlineAgentConfig.base_prompt,
       } : { 
         ...DEFAULT_BASE_AGENT_CONFIG, 
-        llm_model_name: 'gpt-4-turbo-preview',
+        llm_model_name: 'gemini-2.5-pro-preview-05-06',
         base_prompt: '', // Agent will use its internal default
       };
 
@@ -382,7 +382,7 @@ export async function POST(request: NextRequest) {
       });
 
       const agentConfigForWriter = writerAgentConfig ? {
-        model: (writerAgentConfig.llm_model_name.includes('gemini') ? 'gemini' : 'openai') as 'openai' | 'gemini',
+        model: 'gemini' as const,
         temperature: (writerAgentConfig.default_parameters as any)?.temperature || DEFAULT_BASE_AGENT_CONFIG.temperature,
         maxTokens: (writerAgentConfig.default_parameters as any)?.maxTokens || DEFAULT_BASE_AGENT_CONFIG.maxTokens,
         retries: (writerAgentConfig.default_parameters as any)?.retries || DEFAULT_BASE_AGENT_CONFIG.retries,
@@ -390,7 +390,7 @@ export async function POST(request: NextRequest) {
         base_prompt: writerAgentConfig.base_prompt,
       } : {
         ...DEFAULT_BASE_AGENT_CONFIG,
-        llm_model_name: 'gemini-1.5-pro-latest',
+        llm_model_name: 'gemini-2.5-pro-preview-05-06',
         base_prompt: '', // Agent will use its internal default
       };
 
@@ -419,7 +419,7 @@ export async function POST(request: NextRequest) {
               title: aiOutline.title,
               content: contentResult.data,
               productId: productDbId,
-              applicationId: applicationId as number | undefined,
+              applicationId: applicationId as number | null,
               slug: aiOutline.title.toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').substring(0, 250),
               outline: aiOutline,
               status: 'draft',

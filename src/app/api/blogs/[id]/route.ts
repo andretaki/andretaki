@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '../../../../lib/db';
-import { blogPosts, shopifySyncProducts } from '../../../../lib/db/schema';
+import { blogPosts, shopifySyncProducts, BlogMetadataZodSchema, type BlogMetadata } from '../../../../lib/db/schema';
 import { eq } from 'drizzle-orm';
+import { UpdateBlogSchema, formatZodError } from '../../../../lib/validations/api';
 
 // Helper to transform single blog
 function transformSingleBlog(blog: typeof blogPosts.$inferSelect, productTitle?: string | null) {
-  const metadata = (blog.metadata as any) || {};
+  // Use Zod schema to provide defaults for missing fields
+  let metadata: BlogMetadata;
+  try {
+    metadata = BlogMetadataZodSchema.parse(blog.metadata || {});
+  } catch {
+    metadata = BlogMetadataZodSchema.parse({});
+  }
   const slug = blog.slug || blog.title?.toLowerCase()
     .replace(/[^\w\s-]/g, '')
     .replace(/\s+/g, '-')
@@ -21,7 +28,7 @@ function transformSingleBlog(blog: typeof blogPosts.$inferSelect, productTitle?:
     createdAt: blog.createdAt.toISOString(),
     updatedAt: blog.updatedAt.toISOString(),
     productName: productTitle || 'Unknown Product',
-    targetAudience: metadata.targetAudience || 'Research Scientists',
+    targetAudience: metadata.targetAudience,
     wordCount: wordCount,
     keywords: (Array.isArray(blog.keywords) ? blog.keywords : []) as string[],
     metaDescription: metaDescription,
@@ -69,71 +76,73 @@ export async function PUT(request: NextRequest, { params }: { params: { id: stri
     if (isNaN(blogId)) {
       return NextResponse.json({ success: false, error: 'Invalid blog ID' }, { status: 400 });
     }
-    const body = await request.json();
-    const {
-      title,
-      content,
-      status,
-      metaDescription,
-      keywords,
-      productId,
-      applicationId,
-      metadata,
-      slug,
-    } = body;
-    const wordCount = content ? content.split(/\s+/).filter(Boolean).length : 0;
-    const finalSlug = slug || (title ? title.toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').substring(0, 250) : undefined);
+    const rawBody = await request.json();
+    const validation = UpdateBlogSchema.safeParse(rawBody);
+    if (!validation.success) {
+      return NextResponse.json({ 
+        success: false, 
+        error: "Invalid input for update", 
+        details: formatZodError(validation.error)
+      }, { status: 400 });
+    }
+    const body = validation.data;
+    const currentBlog = await db.query.blogPosts.findFirst({ where: eq(blogPosts.id, blogId) });
+    if (!currentBlog) {
+      return NextResponse.json({ success: false, error: "Blog not found" }, { status: 404 });
+    }
     const updatePayload: Partial<typeof blogPosts.$inferInsert> = {
-        updatedAt: new Date(),
+      updatedAt: new Date(),
     };
-    if (title !== undefined) updatePayload.title = title;
-    if (content !== undefined) updatePayload.content = content;
-    if (status !== undefined) updatePayload.status = status;
-    if (metaDescription !== undefined) updatePayload.metaDescription = metaDescription;
-    if (keywords !== undefined) updatePayload.keywords = keywords;
-    if (productId !== undefined) updatePayload.productId = productId;
-    if (applicationId !== undefined) updatePayload.applicationId = applicationId;
-    if (metadata !== undefined) updatePayload.metadata = metadata;
-    if (finalSlug !== undefined) updatePayload.slug = finalSlug;
-    if (content !== undefined) updatePayload.wordCount = wordCount;
+    if (body.title !== undefined) updatePayload.title = body.title;
+    if (body.content !== undefined) {
+      updatePayload.content = body.content;
+      updatePayload.wordCount = typeof body.content === 'string' ? body.content.split(/\s+/).filter(Boolean).length : 0;
+    }
+    if (body.status !== undefined) updatePayload.status = body.status;
+    if (body.metaDescription !== undefined) updatePayload.metaDescription = body.metaDescription;
+    if (body.keywords !== undefined) updatePayload.keywords = body.keywords;
+    if (body.productId !== undefined) updatePayload.productId = body.productId;
+    if (body.applicationId !== undefined) updatePayload.applicationId = body.applicationId;
+    if (body.slug !== undefined) updatePayload.slug = body.slug;
+    if (body.metadata !== undefined) {
+      const existingMetadata = (currentBlog.metadata || {}) as BlogMetadata;
+      const mergedMetadata = { ...existingMetadata, ...body.metadata };
+      const finalMetadataValidation = BlogMetadataZodSchema.safeParse(mergedMetadata);
+      if (!finalMetadataValidation.success) {
+        return NextResponse.json({ 
+          success: false, 
+          error: "Invalid metadata structure provided for update.", 
+          details: formatZodError(finalMetadataValidation.error)
+        }, { status: 400 });
+      }
+      updatePayload.metadata = finalMetadataValidation.data;
+    }
     if (Object.keys(updatePayload).length <= 1) {
-        const currentBlog = await db.query.blogPosts.findFirst({where: eq(blogPosts.id, blogId)});
-        if (!currentBlog) return NextResponse.json({ success: false, error: "Blog not found" }, { status: 404 });
-        const currentBlogWithProduct = await db.select({blog: blogPosts, productTitle: shopifySyncProducts.title})
-            .from(blogPosts)
-            .where(eq(blogPosts.id, blogId))
-            .leftJoin(shopifySyncProducts, eq(blogPosts.productId, shopifySyncProducts.id)).limit(1);
-        return NextResponse.json({ success: true, blog: transformSingleBlog(currentBlogWithProduct[0].blog, currentBlogWithProduct[0].productTitle), message: "No effective changes provided." });
+      const productForCurrent = currentBlog.productId ? await db.query.shopifySyncProducts.findFirst({columns: {title: true}, where: eq(shopifySyncProducts.id, currentBlog.productId)}) : null;
+      return NextResponse.json({ success: true, blog: transformSingleBlog(currentBlog, productForCurrent?.title), message: "No effective changes provided." });
     }
     const updatedBlogArray = await db.update(blogPosts)
       .set(updatePayload)
       .where(eq(blogPosts.id, blogId))
       .returning();
     if (updatedBlogArray.length === 0) {
-      return NextResponse.json({ success: false, error: 'Blog not found or no changes made' }, { status: 404 });
+      return NextResponse.json({ success: false, error: 'Blog not found or update failed' }, { status: 404 });
     }
-    const result = await db
-      .select({
-        blog: blogPosts,
-        productTitle: shopifySyncProducts.title,
-      })
+    const result = await db.select({ blog: blogPosts, productTitle: shopifySyncProducts.title })
       .from(blogPosts)
       .where(eq(blogPosts.id, blogId))
       .leftJoin(shopifySyncProducts, eq(blogPosts.productId, shopifySyncProducts.id))
       .limit(1);
-    if (!result[0] || !result[0].blog) {
-        return NextResponse.json({ success: false, error: 'Failed to retrieve updated blog details' }, { status: 500 });
+    const blogData = result[0];
+    if (!blogData || !blogData.blog) {
+      return NextResponse.json({ success: false, error: 'Failed to retrieve updated blog details' }, { status: 500 });
     }
-    const transformedBlog = transformSingleBlog(result[0].blog, result[0].productTitle);
-    return NextResponse.json({
-      success: true,
-      blog: transformedBlog,
-      message: 'Blog updated successfully'
-    });
-  } catch (error) {
+    const transformedBlog = transformSingleBlog(blogData.blog, blogData.productTitle);
+    return NextResponse.json({ success: true, blog: transformedBlog, message: 'Blog updated successfully' });
+  } catch (error: any) {
     console.error(`Failed to update blog ${params.id}:`, error);
     return NextResponse.json(
-      { success: false, error: 'Failed to update blog', details: error instanceof Error ? error.message : 'Unknown error' },
+      { success: false, error: 'Failed to update blog', details: error.message },
       { status: 500 }
     );
   }

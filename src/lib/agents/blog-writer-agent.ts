@@ -1,6 +1,6 @@
 import { BaseAgent } from './base-agent';
 import { AgentResult } from '../../types/agents';
-import { Product } from '../db/schema';
+import { Product, type BlogMetadata } from '../db/schema';
 import { type BlogOutline } from './blog-outline-agent';
 import { db } from '../db';
 import { eq } from 'drizzle-orm';
@@ -9,7 +9,8 @@ import { agentConfigurations } from '../db/schema';
 export class BlogWriterAgent extends BaseAgent {
   async execute(
     product: Product,
-    outline: BlogOutline
+    outline: BlogOutline,
+    metadata?: Partial<BlogMetadata>
   ): Promise<AgentResult<string>> {
     return this.executeWithRetry(async () => {
       // 1. Fetch Agent Configuration
@@ -20,15 +21,15 @@ export class BlogWriterAgent extends BaseAgent {
 
       // 2. Build the prompt by replacing placeholders in the base prompt
       const prompt = agentConfig.base_prompt
-        .replace('{{PRODUCT_TITLE}}', product.title)
-        .replace('{{PRODUCT_CAS}}', product.casNumber || 'N/A')
-        .replace('{{PRODUCT_FORMULA}}', product.chemicalFormula || 'N/A')
-        .replace('{{PRODUCT_PROPERTIES}}', product.properties ? JSON.stringify(product.properties) : 'Refer to product datasheet')
+        .replace('{{PRODUCT_TITLE}}', product.title || '')
+        .replace('{{PRODUCT_CAS}}', (product as any).casNumber || 'N/A')
+        .replace('{{PRODUCT_FORMULA}}', (product as any).chemicalFormula || 'N/A')
+        .replace('{{PRODUCT_PROPERTIES}}', (product as any).properties ? JSON.stringify((product as any).properties) : 'Refer to product datasheet')
         .replace('{{BLOG_OUTLINE}}', JSON.stringify(outline, null, 2))
-        .replace('{{WRITER_PERSONA}}', outline.persona || 'Technical Writer')
-        .replace('{{TARGET_AUDIENCE}}', outline.targetAudience)
-        .replace('{{TONE}}', outline.tone)
-        .replace('{{TECHNICAL_DEPTH}}', outline.technicalDepth)
+        .replace('{{WRITER_PERSONA}}', metadata?.writerPersona || outline.persona || 'Technical Writer')
+        .replace('{{TARGET_AUDIENCE}}', metadata?.targetAudience || outline.targetAudience)
+        .replace('{{TONE}}', metadata?.blogTone || outline.tone)
+        .replace('{{TECHNICAL_DEPTH}}', metadata?.technicalDepthLevel || outline.technicalDepth)
         .replace('{{ESTIMATED_WORD_COUNT}}', outline.estimatedTotalWordCount.toString())
         .replace('{{PRIMARY_KEYWORD}}', outline.seoElements.primaryKeyword)
         .replace('{{SECONDARY_KEYWORDS}}', JSON.stringify(outline.seoElements.secondaryKeywords))
@@ -52,9 +53,13 @@ export class BlogWriterAgent extends BaseAgent {
         'blog_outline',
         outline.title.substring(0, 50),
         'write_blog_post_from_outline',
-        { productId: product.id, blogTitle: outline.title },
+        { 
+          productId: product.id, 
+          blogTitle: outline.title,
+          metadata: metadata || {}
+        },
         true,
-        (prompt.length + content.length) / 4
+        Math.floor((prompt.length + content.length) / 4)
       );
 
       return content;

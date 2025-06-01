@@ -101,20 +101,31 @@ export async function getShopifyArticles(blogId: number): Promise<{ articles: Sh
   return shopifyFetch(`blogs/${blogId}/articles.json`);
 }
 
-// Optional: Add functions for update and delete as you expand
-/*
+export interface ShopifyArticleUpdateInput { // More specific for updates
+  id: number; // Required for update
+  title?: string;
+  author?: string;
+  tags?: string;
+  body_html?: string;
+  published?: boolean; // To publish or unpublish
+  image?: { src: string; alt?: string } | null; // Allow null to remove image
+  summary_html?: string;
+  metafields?: { key: string; value: string; type: string; namespace: string }[]; // Or specific metafield update structure
+  handle?: string; // Shopify allows handle updates, but be cautious
+}
+
 export async function updateShopifyArticle(
-  blogId: number,
-  articleId: number,
-  article: Partial<ShopifyArticleInput>
+  blogId: number, // Shopify's Blog ID
+  articleId: number, // Shopify's Article ID
+  articleUpdate: Partial<ShopifyArticleUpdateInput> // Use Partial for flexibility
 ): Promise<{ article: ShopifyArticle }> {
-  return shopifyFetch(`blogs/${blogId}/articles/${articleId}.json`, 'PUT', { article });
+  // Shopify API expects the article object nested under "article" key
+  return shopifyFetch(`blogs/${blogId}/articles/${articleId}.json`, 'PUT', { article: { id: articleId, ...articleUpdate } });
 }
 
 export async function deleteShopifyArticle(blogId: number, articleId: number): Promise<null> {
   return shopifyFetch(`blogs/${blogId}/articles/${articleId}.json`, 'DELETE');
 }
-*/
 
 // Product-related interfaces
 export interface ShopifyProductVariant {

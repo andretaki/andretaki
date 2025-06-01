@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '../../../lib/db';
-import { blogPosts, shopifySyncProducts, type BlogPost } from '../../../lib/db/schema';
+import { blogPosts, shopifySyncProducts, type BlogPost, BlogMetadataZodSchema, type BlogMetadata } from '../../../lib/db/schema';
 import { eq, desc, asc, sql, like, or, and, SQL } from 'drizzle-orm';
+import { generateGeminiEmbedding, EMBEDDING_DIMENSIONS } from '../../../lib/ai/embedding-client';
+import { TaskType } from '@google/generative-ai';
+import { CreateBlogSchema, formatZodError } from '../../../lib/validations/api';
 
 // Define valid sort columns and their corresponding table columns
 const validSortColumns = {
@@ -16,6 +19,33 @@ const validSortColumns = {
 } as const;
 
 type ValidSortColumn = keyof typeof validSortColumns;
+
+// Helper function to transform blog data for response
+function transformSingleBlog(blog: BlogPost, productTitle: string | null) {
+    const metadataResponse = (blog.metadata as BlogMetadata) || {};
+    return {
+        id: blog.id,
+        title: blog.title,
+        title_embedding: blog.title_embedding,
+        slug: blog.slug || '',
+        content: blog.content || '',
+        status: blog.status || 'draft',
+        createdAt: blog.createdAt,
+        updatedAt: blog.updatedAt,
+        productName: productTitle || 'Unknown Product',
+        targetAudience: metadataResponse.targetAudience,
+        wordCount: blog.wordCount || 0,
+        keywords: (Array.isArray(blog.keywords) ? blog.keywords : []) as string[],
+        metaDescription: blog.metaDescription || '',
+        views: blog.views ?? null,
+        engagement: blog.engagement ?? null,
+        productId: blog.productId,
+        applicationId: blog.applicationId,
+        metadata: blog.metadata,
+        type: blog.type || 'standard_blog',
+        outline: blog.outline || null,
+    } as unknown as BlogPost;
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -147,38 +177,69 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const {
-      title,
-      content,
-      productId,
-      status,
-      metaDescription,
-      keywords,
-      metadata
-    } = body;
+    const rawBody = await request.json();
+    const validation = CreateBlogSchema.safeParse(rawBody);
 
-    if (!title) {
-        return NextResponse.json({ error: 'Title is required' }, { status: 400 });
+    if (!validation.success) {
+      return NextResponse.json({ 
+        success: false, 
+        error: "Invalid input", 
+        details: formatZodError(validation.error)
+      }, { status: 400 });
     }
+
+    const { title, content, productId, applicationId, status, metaDescription, keywords, metadata } = validation.data;
+
+    // Generate embedding for title similarity check
+    const embedding = await generateGeminiEmbedding(title, TaskType.SEMANTIC_SIMILARITY);
+
+    // Check similarity against existing blog post titles
+    const vectorString = `[${embedding.join(',')}]`;
+    const similarBlogPosts = await db.execute(sql`
+      SELECT id, title, 1 - (title_embedding <=> ${vectorString}::vector(${EMBEDDING_DIMENSIONS})) AS similarity
+      FROM marketing.blog_posts
+      WHERE title_embedding IS NOT NULL AND 1 - (title_embedding <=> ${vectorString}::vector(${EMBEDDING_DIMENSIONS})) > 0.90
+      ORDER BY similarity DESC LIMIT 1;
+    `);
+
+    if (similarBlogPosts.rows.length > 0 && (similarBlogPosts.rows[0] as any).similarity > 0.90) {
+      const similarPost = similarBlogPosts.rows[0] as any;
+      return NextResponse.json({
+        success: false,
+        error: "This title is very similar to an existing blog post.",
+        details: `Similar to blog post: "${similarPost.title}" (ID: ${similarPost.id})`,
+        similarBlogId: similarPost.id,
+        similarityType: 'blog_post'
+      }, { status: 409 });
+    }
+
     const slug = title.toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').substring(0, 250);
     const wordCount = content ? content.split(/\s+/).filter(Boolean).length : 0;
-    const newBlogArray = await db.insert(blogPosts).values({
-      title: title,
-      slug: slug,
+
+    const newBlogValues = {
+      title,
+      title_embedding: embedding,
+      slug,
       content: content || '',
-      productId: productId || null,
-      status: status || 'draft',
+      productId,
+      applicationId,
+      status,
       metaDescription: metaDescription || '',
       keywords: keywords || [],
-      wordCount: wordCount,
-      metadata: metadata || {},
-    }).returning();
+      wordCount,
+      metadata,
+      type: 'standard_blog',
+    };
+
+    const newBlogArray = await db.insert(blogPosts).values(newBlogValues).returning();
+
     if (newBlogArray.length === 0) {
-        return NextResponse.json({ error: 'Failed to create blog post' }, { status: 500 });
+      return NextResponse.json({ success: false, error: 'Failed to create blog post' }, { status: 500 });
     }
+
     const newBlog = newBlogArray[0];
-    // Fetch the newly created blog with product title for consistent response structure
+
+    // Fetch the newly created blog with product title
     const result = await db
       .select({
         blog: blogPosts,
@@ -188,38 +249,28 @@ export async function POST(request: NextRequest) {
       .where(eq(blogPosts.id, newBlog.id))
       .leftJoin(shopifySyncProducts, eq(blogPosts.productId, shopifySyncProducts.id))
       .limit(1);
+
     const blogData = result[0];
-     if (!blogData || !blogData.blog) {
-      return NextResponse.json({ error: 'Failed to retrieve created blog details' }, { status: 500 });
+    if (!blogData || !blogData.blog) {
+      return NextResponse.json({ success: false, error: 'Failed to retrieve created blog details' }, { status: 500 });
     }
-    const metadataResponse = (blogData.blog.metadata as any) || {};
-    const transformedBlog = {
-        id: blogData.blog.id,
-        title: blogData.blog.title,
-        slug: blogData.blog.slug || '',
-        content: blogData.blog.content || '',
-        status: (blogData.blog.status as 'draft' | 'published' | 'archived') || 'draft',
-        createdAt: blogData.blog.createdAt.toISOString(),
-        updatedAt: blogData.blog.updatedAt.toISOString(),
-        productName: blogData.productTitle || 'Unknown Product',
-        wordCount: blogData.blog.wordCount || 0,
-        keywords: (Array.isArray(blogData.blog.keywords) ? blogData.blog.keywords : []) as string[],
-        metaDescription: blogData.blog.metaDescription || '',
-        views: blogData.blog.views ?? null,
-        engagement: blogData.blog.engagement ?? null,
-        productId: blogData.blog.productId,
-        applicationId: blogData.blog.applicationId,
-        metadata: blogData.blog.metadata,
-    };
-    return NextResponse.json({
-      success: true,
-      blog: transformedBlog,
-      message: 'Blog created successfully'
+
+    const transformedBlog = transformSingleBlog(blogData.blog, blogData.productTitle);
+
+    return NextResponse.json({ 
+      success: true, 
+      blog: transformedBlog, 
+      message: 'Blog created successfully' 
     }, { status: 201 });
+
   } catch (error) {
     console.error('Failed to create blog:', error);
     return NextResponse.json(
-      { error: 'Failed to create blog', details: error instanceof Error ? error.message : 'Unknown error' },
+      { 
+        success: false, 
+        error: 'Failed to create blog', 
+        details: error instanceof Error ? error.message : 'Unknown error' 
+      },
       { status: 500 }
     );
   }
@@ -231,7 +282,11 @@ export async function PUT(request: NextRequest) {
     const {
       id,
       title,
-      content
+      content,
+      status,
+      metaDescription,
+      keywords,
+      metadata
     } = body;
 
     if (!id) {
@@ -241,12 +296,50 @@ export async function PUT(request: NextRequest) {
       );
     }
 
+    // Fetch existing blog to get current metadata
+    const existingBlog = await db.query.blogPosts.findFirst({
+      where: eq(blogPosts.id, id)
+    });
+
+    if (!existingBlog) {
+      return NextResponse.json(
+        { error: 'Blog not found' },
+        { status: 404 }
+      );
+    }
+
+    // Handle metadata update
+    let updatedMetadata = existingBlog.metadata as BlogMetadata;
+    if (metadata) {
+      const metadataValidation = BlogMetadataZodSchema.safeParse({
+        ...updatedMetadata,
+        ...metadata
+      });
+      if (!metadataValidation.success) {
+        console.warn(`Invalid metadata for PUT /api/blogs/${id}:`, metadataValidation.error.format());
+        // For now, we'll keep the existing metadata if validation fails
+      } else {
+        updatedMetadata = metadataValidation.data;
+      }
+    }
+
+    const updatePayload: Partial<typeof blogPosts.$inferInsert> = {
+      updatedAt: new Date(),
+    };
+
+    // Only update fields that are provided
+    if (title !== undefined) updatePayload.title = title;
+    if (content !== undefined) {
+      updatePayload.content = content;
+      updatePayload.wordCount = typeof content === 'string' ? content.split(/\s+/).filter(Boolean).length : 0;
+    }
+    if (status !== undefined) updatePayload.status = status;
+    if (metaDescription !== undefined) updatePayload.metaDescription = metaDescription;
+    if (keywords !== undefined) updatePayload.keywords = keywords;
+    if (metadata !== undefined) updatePayload.metadata = updatedMetadata;
+
     const updatedBlog = await db.update(blogPosts)
-      .set({
-        title,
-        content,
-        updatedAt: new Date()
-      })
+      .set(updatePayload)
       .where(eq(blogPosts.id, id))
       .returning();
 
@@ -257,9 +350,46 @@ export async function PUT(request: NextRequest) {
       );
     }
 
+    // Fetch the updated blog with product title for consistent response structure
+    const result = await db
+      .select({
+        blog: blogPosts,
+        productTitle: shopifySyncProducts.title,
+      })
+      .from(blogPosts)
+      .where(eq(blogPosts.id, id))
+      .leftJoin(shopifySyncProducts, eq(blogPosts.productId, shopifySyncProducts.id))
+      .limit(1);
+
+    const blogData = result[0];
+    if (!blogData || !blogData.blog) {
+      return NextResponse.json({ error: 'Failed to retrieve updated blog details' }, { status: 500 });
+    }
+
+    const transformedBlog = {
+      id: blogData.blog.id,
+      title: blogData.blog.title,
+      slug: blogData.blog.slug || '',
+      content: blogData.blog.content || '',
+      status: (blogData.blog.status as 'draft' | 'published' | 'archived') || 'draft',
+      createdAt: blogData.blog.createdAt.toISOString(),
+      updatedAt: blogData.blog.updatedAt.toISOString(),
+      productName: blogData.productTitle || 'Unknown Product',
+      wordCount: blogData.blog.wordCount || 0,
+      keywords: (Array.isArray(blogData.blog.keywords) ? blogData.blog.keywords : []) as string[],
+      metaDescription: blogData.blog.metaDescription || '',
+      views: blogData.blog.views ?? null,
+      engagement: blogData.blog.engagement ?? null,
+      productId: blogData.blog.productId,
+      applicationId: blogData.blog.applicationId,
+      outline: blogData.blog.outline,
+      type: blogData.blog.type,
+      metadata: blogData.blog.metadata,
+    };
+
     return NextResponse.json({
       success: true,
-      blog: updatedBlog[0],
+      blog: transformedBlog,
       message: 'Blog updated successfully'
     });
 

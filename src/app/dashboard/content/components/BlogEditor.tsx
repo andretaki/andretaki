@@ -26,32 +26,45 @@ import {
   CheckCircle,
   Loader
 } from 'lucide-react';
+import { BlogMetadataZodSchema, BlogOutlineZodSchema, type BlogMetadata } from '../../../../lib/db/schema';
+import { z } from 'zod';
+import { toast } from 'sonner';
+
+// Constants
+const DEFAULT_TARGET_AUDIENCE = 'Research Scientists';
 
 // Interface for the data structure expected from the API
 interface BlogApiResponse {
   id: number;
   title: string;
-  slug: string;
   content: string;
+  metaDescription: string;
+  keywords: string[];
   status: 'draft' | 'published' | 'archived';
+  productId: number | null;
+  applicationId: number | null;
+  slug: string;
+  type: string;
+  outline: any;
+  metadata: BlogMetadata;
   createdAt: string;
   updatedAt: string;
-  productName?: string;
-  targetAudience?: string;
+  views: number | null;
+  engagement: number | null;
   wordCount: number;
-  keywords: string[];
-  metaDescription: string;
-  views?: number | null;
-  engagement?: number | null;
-  productId?: number | null;
-  applicationId?: number | null;
-  metadata?: any;
+  productName?: string;
 }
 
 interface BlogEditorProps {
   blogId?: number;
   onBack: () => void;
   mode: 'edit' | 'view' | 'create';
+}
+
+// Add interface for available products
+interface AvailableProduct {
+  id: number;
+  title: string | null;
 }
 
 export default function BlogEditor({ blogId: initialBlogId, onBack, mode: initialMode }: BlogEditorProps) {
@@ -69,7 +82,17 @@ export default function BlogEditor({ blogId: initialBlogId, onBack, mode: initia
   const [metaDescription, setMetaDescription] = useState('');
   const [keywords, setKeywords] = useState<string[]>([]);
   const [status, setStatus] = useState<'draft' | 'published' | 'archived'>('draft');
-  const [editableProductId, setEditableProductId] = useState<number | null | undefined>(undefined);
+  const [editableProductId, setEditableProductId] = useState<number | null>(null);
+
+  // Metadata states
+  const [targetAudience, setTargetAudience] = useState<string>(DEFAULT_TARGET_AUDIENCE);
+  const [blogTone, setBlogTone] = useState<z.infer<typeof BlogMetadataZodSchema.shape.blogTone>>(null);
+  const [technicalDepth, setTechnicalDepth] = useState<z.infer<typeof BlogMetadataZodSchema.shape.technicalDepthLevel>>(null);
+  const [strategicTheme, setStrategicTheme] = useState<string>('');
+  const [customNotes, setCustomNotes] = useState<string>('');
+
+  const [availableProducts, setAvailableProducts] = useState<AvailableProduct[]>([]);
+  const [loadingProducts, setLoadingProducts] = useState(false);
 
   const resetForm = () => {
     setTitle('');
@@ -81,6 +104,13 @@ export default function BlogEditor({ blogId: initialBlogId, onBack, mode: initia
     setBlogData(null);
     setCurrentBlogId(undefined);
     setHasChanges(false);
+    
+    // Reset metadata fields
+    setTargetAudience(DEFAULT_TARGET_AUDIENCE);
+    setBlogTone(null);
+    setTechnicalDepth(null);
+    setStrategicTheme('');
+    setCustomNotes('');
   };
 
   const populateForm = useCallback((data: BlogApiResponse | null) => {
@@ -89,20 +119,28 @@ export default function BlogEditor({ blogId: initialBlogId, onBack, mode: initia
       setTitle(data.title || '');
       setContent(data.content || '');
       setMetaDescription(data.metaDescription || '');
-      setKeywords(Array.isArray(data.keywords) ? data.keywords : []);
+      setKeywords(data.keywords || []);
       setStatus(data.status || 'draft');
-      setEditableProductId(data.productId);
+      setEditableProductId(data.productId || null);
       setCurrentBlogId(data.id);
+
+      // Populate metadata fields
+      const meta = data.metadata || {};
+      setTargetAudience(meta.targetAudience || DEFAULT_TARGET_AUDIENCE);
+      setBlogTone(meta.blogTone || null);
+      setTechnicalDepth(meta.technicalDepthLevel || null);
+      setStrategicTheme(meta.strategic_theme || '');
+      setCustomNotes(meta.custom_notes || '');
     } else {
       resetForm();
     }
     setHasChanges(false);
-  }, []);
+  }, [resetForm]);
 
   const fetchBlog = useCallback(async (id: number) => {
     if (currentMode === 'create') {
-        setLoading(false);
-        return;
+      setLoading(false);
+      return;
     }
     setLoading(true);
     try {
@@ -119,13 +157,38 @@ export default function BlogEditor({ blogId: initialBlogId, onBack, mode: initia
       }
     } catch (error) {
       console.error('Failed to fetch blog:', error);
-      alert(`Error fetching blog: ${error instanceof Error ? error.message : String(error)}`);
+      toast.error(`Error fetching blog: ${error instanceof Error ? error.message : String(error)}`);
       populateForm(null);
       onBack();
     } finally {
       setLoading(false);
     }
   }, [currentMode, onBack, populateForm]);
+
+  // Add useEffect to fetch available products
+  useEffect(() => {
+    const fetchAvailableProducts = async () => {
+      if (currentMode === 'create' || currentMode === 'edit') {
+        setLoadingProducts(true);
+        try {
+          const response = await fetch('/api/products/available');
+          if (!response.ok) {
+            throw new Error('Failed to fetch products');
+          }
+          const data = await response.json();
+          if (data.success && data.products) {
+            setAvailableProducts(data.products);
+          }
+        } catch (error) {
+          console.error("Error fetching available products:", error);
+          toast.error("Could not load product list for association.");
+        } finally {
+          setLoadingProducts(false);
+        }
+      }
+    };
+    fetchAvailableProducts();
+  }, [currentMode]);
 
   useEffect(() => {
     setCurrentMode(initialMode);
@@ -135,23 +198,29 @@ export default function BlogEditor({ blogId: initialBlogId, onBack, mode: initia
     } else if (initialBlogId && initialBlogId !== currentBlogId) {
       setCurrentBlogId(initialBlogId);
       fetchBlog(initialBlogId);
-    } else if (initialBlogId && !blogData && initialMode !== 'create') {
-        fetchBlog(initialBlogId);
-    } else if (!initialBlogId && initialMode !== 'create') {
-        setLoading(false);
-        populateForm(null);
+    } else if (initialBlogId && !blogData && (initialMode === 'edit' || initialMode === 'view')) {
+      fetchBlog(initialBlogId);
+    } else if (!initialBlogId && (initialMode === 'edit' || initialMode === 'view')) {
+      setLoading(false);
+      populateForm(null);
     }
   }, [initialBlogId, initialMode, fetchBlog, currentBlogId, blogData]);
 
-  const handleInputChange = (field: string, value: any) => {
+  const handleInputChange = (field: string, value: string | string[] | null) => {
     setHasChanges(true);
     switch (field) {
-      case 'title': setTitle(value); break;
-      case 'content': setContent(value); break;
-      case 'metaDescription': setMetaDescription(value); break;
-      case 'keywords': setKeywords(value); break;
-      case 'status': setStatus(value); break;
-      case 'editableProductId': setEditableProductId(value === '' ? null : Number(value)); break;
+      case 'title': setTitle(value as string); break;
+      case 'content': setContent(value as string); break;
+      case 'metaDescription': setMetaDescription(value as string); break;
+      case 'keywords': setKeywords(value as string[]); break;
+      case 'status': setStatus(value as 'draft' | 'published' | 'archived'); break;
+      case 'productId': setEditableProductId(value ? parseInt(value as string) : null); break;
+      // Metadata fields
+      case 'targetAudience': setTargetAudience(value as string); break;
+      case 'blogTone': setBlogTone(value as z.infer<typeof BlogMetadataZodSchema.shape.blogTone> || null); break;
+      case 'technicalDepth': setTechnicalDepth(value as z.infer<typeof BlogMetadataZodSchema.shape.technicalDepthLevel> || null); break;
+      case 'strategicTheme': setStrategicTheme(value as string); break;
+      case 'customNotes': setCustomNotes(value as string); break;
     }
   };
 
@@ -168,56 +237,83 @@ export default function BlogEditor({ blogId: initialBlogId, onBack, mode: initia
 
   const handleSave = async (publishOverride?: boolean) => {
     if (!title.trim()) {
-      alert("Title is required.");
+      toast.error("Title is required.");
       return;
     }
     setSaving(true);
-    const payload: Partial<BlogApiResponse> & { wordCount: number } = {
+    
+    // Start with existing metadata or create new object with defaults
+    const baseMetadata = blogData?.metadata 
+      ? BlogMetadataZodSchema.parse(blogData.metadata) 
+      : BlogMetadataZodSchema.parse({
+          targetAudience: DEFAULT_TARGET_AUDIENCE,
+          blogTone: null,
+          technicalDepthLevel: null,
+          strategic_theme: null,
+          custom_notes: null
+        });
+
+    // Create user-editable metadata object
+    const userEditableMetadata: Partial<BlogMetadata> = {
+      targetAudience,
+      blogTone,
+      technicalDepthLevel: technicalDepth,
+      strategic_theme: strategicTheme.trim() || null,
+      custom_notes: customNotes.trim() || null
+    };
+
+    // Merge metadata, ensuring user edits override defaults/previous values
+    const metadataToSaveAttempt: BlogMetadata = {
+      ...baseMetadata,
+      ...userEditableMetadata
+    };
+
+    // Validate the final metadata object
+    const metadataValidation = BlogMetadataZodSchema.safeParse(metadataToSaveAttempt);
+    if (!metadataValidation.success) {
+      toast.error("Metadata validation error: " + JSON.stringify(metadataValidation.error.format()._errors));
+      setSaving(false);
+      return;
+    }
+    const finalValidatedMetadata = metadataValidation.data;
+
+    const payload = {
       title,
       content,
       metaDescription,
       keywords,
       status: publishOverride ? 'published' : status,
-      wordCount: content.split(/\s+/).filter(Boolean).length,
-      productId: editableProductId === undefined ? null : editableProductId,
-      metadata: {
-        ...(blogData?.metadata || {}),
-        targetAudience: blogData?.targetAudience || "Research Scientists"
-      },
+      productId: editableProductId,
+      applicationId: blogData?.applicationId,
+      slug: blogData?.slug || title.toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').substring(0, 250),
+      type: blogData?.type || 'standard_blog',
+      outline: blogData?.outline,
+      metadata: finalValidatedMetadata,
     };
-    let response;
-    let url = '/api/blogs';
-    let method: 'POST' | 'PUT' = 'POST';
-    if (currentMode === 'edit' && currentBlogId) {
-      url = `/api/blogs/${currentBlogId}`;
-      method = 'PUT';
-    } else if (currentMode !== 'create') {
-      console.error("Save called in invalid mode or without blogId for edit.");
-      setSaving(false);
-      alert("Error: Cannot save in the current mode.");
-      return;
-    }
+
     try {
-      response = await fetch(url, {
-        method: method,
+      const response = await fetch(currentBlogId ? `/api/blogs/${currentBlogId}` : '/api/blogs', {
+        method: currentBlogId ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(payload)
       });
       const responseData = await response.json();
       if (!response.ok || !responseData.success) {
         throw new Error(responseData.error || responseData.details?.message || responseData.message || `Failed to save blog (status ${response.status})`);
       }
-      alert(`Blog ${publishOverride ? 'published' : 'saved'} successfully!`);
+      toast.success(`Blog ${publishOverride ? 'published' : 'saved'} successfully!`);
       if (responseData.blog) {
         populateForm(responseData.blog as BlogApiResponse);
-        if (currentMode === 'create') {
+        if (currentMode === 'create' && !publishOverride) {
+          setCurrentMode('edit');
+        } else if (publishOverride && currentMode === 'create') {
           setCurrentMode('edit');
         }
       }
       setHasChanges(false);
     } catch (error) {
       console.error('Failed to save blog:', error);
-      alert(`Failed to save blog. ${error instanceof Error ? error.message : String(error)}`);
+      toast.error(`Failed to save blog: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setSaving(false);
     }
@@ -229,34 +325,34 @@ export default function BlogEditor({ blogId: initialBlogId, onBack, mode: initia
 
   const handleDelete = async () => {
     if (!currentBlogId) {
-        alert("No blog selected to delete or blog not yet saved.");
-        return;
+      toast.warning("No blog selected to delete or blog not yet saved.");
+      return;
     }
     if (!confirm("Are you sure you want to delete this blog post? This action cannot be undone.")) {
-        return;
+      return;
     }
     setSaving(true);
     try {
-        const response = await fetch(`/api/blogs/${currentBlogId}`, {
-            method: 'DELETE',
-        });
-        const data = await response.json();
-        if (!response.ok || !data.success) {
-            throw new Error(data.error || data.message || `Failed to delete blog (status ${response.status})`);
-        }
-        alert("Blog deleted successfully!");
-        onBack(); 
+      const response = await fetch(`/api/blogs/${currentBlogId}`, {
+        method: 'DELETE',
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || data.message || `Failed to delete blog (status ${response.status})`);
+      }
+      toast.success("Blog deleted successfully!");
+      onBack();
     } catch (error) {
-        console.error('Failed to delete blog:', error);
-        alert(`Failed to delete blog. ${error instanceof Error ? error.message : String(error)}`);
+      console.error('Failed to delete blog:', error);
+      toast.error(`Failed to delete blog: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
-        setSaving(false);
+      setSaving(false);
     }
   };
 
   const isEditingMode = currentMode === 'edit' || currentMode === 'create';
 
-  if (loading && (String(initialMode) === 'edit' || String(initialMode) === 'view')) {
+  if (loading && (initialMode === 'edit' || initialMode === 'view')) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="text-center">
@@ -268,7 +364,7 @@ export default function BlogEditor({ blogId: initialBlogId, onBack, mode: initia
   }
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
@@ -362,242 +458,534 @@ export default function BlogEditor({ blogId: initialBlogId, onBack, mode: initia
         </div>
       </div>
 
-      {/* Content */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Main Editor/Viewer */}
-        <div className="lg:col-span-2">
-          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-            {isEditingMode ? (
-              <div className="p-6 space-y-6">
-                {/* Title */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Title
-                  </label>
-                  <input
-                    type="text"
-                    value={title}
-                    onChange={(e) => handleInputChange('title', e.target.value)}
-                    className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-xl font-semibold"
-                    placeholder="Enter blog title..."
-                  />
-                </div>
-
-                {/* Content Editor */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Content
-                  </label>
-                  <div className="border border-gray-200 rounded-lg overflow-hidden">
-                    {/* Toolbar */}
-                    <div className="bg-gray-50 border-b border-gray-200 p-3 flex items-center gap-2">
-                      <button className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded">
-                        <Bold className="w-4 h-4" />
-                      </button>
-                      <button className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded">
-                        <Italic className="w-4 h-4" />
-                      </button>
-                      <div className="w-px h-6 bg-gray-300"></div>
-                      <button className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded">
-                        <Link className="w-4 h-4" />
-                      </button>
-                      <button className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded">
-                        <List className="w-4 h-4" />
-                      </button>
-                      <button className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded">
-                        <Quote className="w-4 h-4" />
-                      </button>
-                      <button className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded">
-                        <Image className="w-4 h-4" />
-                      </button>
+      <div className="flex-1 flex overflow-hidden">
+        {/* Main content area */}
+        <div className="flex-1 overflow-y-auto p-6">
+          {/* Content */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            {/* Main Editor/Viewer */}
+            <div className="lg:col-span-2">
+              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                {isEditingMode ? (
+                  <div className="p-6 space-y-6">
+                    {/* Title */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Title
+                      </label>
+                      <input
+                        type="text"
+                        value={title}
+                        onChange={(e) => handleInputChange('title', e.target.value)}
+                        className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-xl font-semibold"
+                        placeholder="Enter blog title..."
+                      />
                     </div>
+
+                    {/* Content Editor */}
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Content
+                      </label>
+                      <div className="border border-gray-200 rounded-lg overflow-hidden">
+                        {/* Toolbar */}
+                        <div className="bg-gray-50 border-b border-gray-200 p-3 flex items-center gap-2">
+                          <button className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded">
+                            <Bold className="w-4 h-4" />
+                          </button>
+                          <button className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded">
+                            <Italic className="w-4 h-4" />
+                          </button>
+                          <div className="w-px h-6 bg-gray-300"></div>
+                          <button className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded">
+                            <Link className="w-4 h-4" />
+                          </button>
+                          <button className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded">
+                            <List className="w-4 h-4" />
+                          </button>
+                          <button className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded">
+                            <Quote className="w-4 h-4" />
+                          </button>
+                          <button className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-200 rounded">
+                            <Image className="w-4 h-4" />
+                          </button>
+                        </div>
+                        
+                        <textarea
+                          value={content}
+                          onChange={(e) => handleInputChange('content', e.target.value)}
+                          className="w-full h-96 p-4 border-0 focus:ring-0 resize-none font-mono text-sm"
+                          placeholder="Write your blog content in Markdown..."
+                        />
+                      </div>
+                      <p className="text-xs text-gray-500 mt-2">
+                        Supports Markdown formatting. Word count: {content.split(/\s+/).filter(w => w).length}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-8">
+                    <h1 className="text-4xl font-bold text-gray-900 mb-6">{title}</h1>
                     
-                    <textarea
-                      value={content}
-                      onChange={(e) => handleInputChange('content', e.target.value)}
-                      className="w-full h-96 p-4 border-0 focus:ring-0 resize-none font-mono text-sm"
-                      placeholder="Write your blog content in Markdown..."
+                    {blogData && (
+                      <div className="flex items-center gap-4 text-sm text-gray-600 mb-8 pb-6 border-b border-gray-200">
+                        <span className="flex items-center gap-1">
+                          <Calendar className="w-4 h-4" />
+                          {new Date(blogData.createdAt).toLocaleDateString('en-US', { 
+                            year: 'numeric', 
+                            month: 'long', 
+                            day: 'numeric' 
+                          })}
+                        </span>
+                        <span>•</span>
+                        <span>{blogData.wordCount} words</span>
+                        <span>•</span>
+                        <span>{Math.ceil(blogData.wordCount / 200)} min read</span>
+                        <span>•</span>
+                        <span className="flex items-center gap-1">
+                          <Tag className="w-4 h-4" />
+                          {blogData.productName}
+                        </span>
+                      </div>
+                    )}
+
+                    <div 
+                      className="prose prose-lg max-w-none"
+                      dangerouslySetInnerHTML={{ 
+                        __html: content.split('\n').map(line => {
+                          if (line.startsWith('# ')) return `<h1>${line.slice(2)}</h1>`;
+                          if (line.startsWith('## ')) return `<h2>${line.slice(3)}</h2>`;
+                          if (line.startsWith('### ')) return `<h3>${line.slice(4)}</h3>`;
+                          if (line.startsWith('- ')) return `<li>${line.slice(2)}</li>`;
+                          if (line.startsWith('**') && line.endsWith('**')) return `<strong>${line.slice(2, -2)}</strong>`;
+                          return line ? `<p>${line}</p>` : '<br>';
+                        }).join('')
+                      }}
                     />
                   </div>
-                  <p className="text-xs text-gray-500 mt-2">
-                    Supports Markdown formatting. Word count: {content.split(/\s+/).filter(w => w).length}
-                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Sidebar */}
+            <div className="space-y-6">
+              {/* Meta Information */}
+              <div className="bg-white rounded-xl border border-gray-200 p-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">Blog Details</h3>
+                
+                <div className="space-y-4">
+                  {/* Status */}
+                  {isEditingMode && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Status
+                      </label>
+                      <select
+                        value={status}
+                        onChange={(e) => handleInputChange('status', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                      >
+                        <option value="draft">Draft</option>
+                        <option value="published">Published</option>
+                        <option value="archived">Archived</option>
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Meta Description */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Meta Description
+                    </label>
+                    {isEditingMode ? (
+                      <textarea
+                        value={metaDescription}
+                        onChange={(e) => handleInputChange('metaDescription', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        rows={3}
+                        placeholder="SEO description..."
+                      />
+                    ) : (
+                      <p className="text-sm text-gray-600">{metaDescription}</p>
+                    )}
+                  </div>
+
+                  {/* Keywords */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Keywords
+                    </label>
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      {keywords.map((keyword, index) => (
+                        <span
+                          key={index}
+                          className="inline-flex items-center gap-1 px-2 py-1 bg-indigo-100 text-indigo-700 rounded-md text-xs"
+                        >
+                          {keyword}
+                          {isEditingMode && (
+                            <button
+                              onClick={() => removeKeyword(index)}
+                              className="text-indigo-500 hover:text-indigo-700"
+                            >
+                              ×
+                            </button>
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                    {isEditingMode && (
+                      <input
+                        type="text"
+                        className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm"
+                        placeholder="Add keyword and press Enter"
+                        onKeyPress={(e) => {
+                          if (e.key === 'Enter') {
+                            addKeyword(e.currentTarget.value);
+                            e.currentTarget.value = '';
+                          }
+                        }}
+                      />
+                    )}
+                  </div>
+
+                  {blogData && (
+                    <>
+                      <div className="pt-4 border-t border-gray-200">
+                        <div className="grid grid-cols-2 gap-4 text-sm">
+                          <div><p className="text-gray-500">Created</p><p className="font-medium">{new Date(blogData.createdAt).toLocaleDateString()}</p></div>
+                          <div><p className="text-gray-500">Updated</p><p className="font-medium">{new Date(blogData.updatedAt).toLocaleDateString()}</p></div>
+                        </div>
+                      </div>
+                      {(typeof blogData.views === 'number' || typeof blogData.engagement === 'number') && (
+                        <div className="pt-4 border-t border-gray-200">
+                          <div className="grid grid-cols-2 gap-4 text-sm">
+                            <div><p className="text-gray-500">Views</p><p className="font-medium">{typeof blogData.views === 'number' ? blogData.views.toLocaleString() : '-'}</p></div>
+                            <div><p className="text-gray-500">Engagement</p><p className="font-medium">{typeof blogData.engagement === 'number' ? blogData.engagement + '%' : '-'}</p></div>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
               </div>
-            ) : (
-              <div className="p-8">
-                <h1 className="text-4xl font-bold text-gray-900 mb-6">{title}</h1>
-                
-                {blogData && (
-                  <div className="flex items-center gap-4 text-sm text-gray-600 mb-8 pb-6 border-b border-gray-200">
-                    <span className="flex items-center gap-1">
-                      <Calendar className="w-4 h-4" />
-                      {new Date(blogData.createdAt).toLocaleDateString('en-US', { 
-                        year: 'numeric', 
-                        month: 'long', 
-                        day: 'numeric' 
-                      })}
-                    </span>
-                    <span>•</span>
-                    <span>{blogData.wordCount} words</span>
-                    <span>•</span>
-                    <span>{Math.ceil(blogData.wordCount / 200)} min read</span>
-                    <span>•</span>
-                    <span className="flex items-center gap-1">
-                      <Tag className="w-4 h-4" />
-                      {blogData.productName}
-                    </span>
-                  </div>
-                )}
 
-                <div 
-                  className="prose prose-lg max-w-none"
-                  dangerouslySetInnerHTML={{ 
-                    __html: content.split('\n').map(line => {
-                      if (line.startsWith('# ')) return `<h1>${line.slice(2)}</h1>`;
-                      if (line.startsWith('## ')) return `<h2>${line.slice(3)}</h2>`;
-                      if (line.startsWith('### ')) return `<h3>${line.slice(4)}</h3>`;
-                      if (line.startsWith('- ')) return `<li>${line.slice(2)}</li>`;
-                      if (line.startsWith('**') && line.endsWith('**')) return `<strong>${line.slice(2, -2)}</strong>`;
-                      return line ? `<p>${line}</p>` : '<br>';
-                    }).join('')
-                  }}
-                />
+              {/* Metadata Section */}
+              <div className="bg-white rounded-xl border border-gray-200 p-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">Content Metadata</h3>
+                
+                <div className="space-y-4">
+                  {isEditingMode ? (
+                    <>
+                      {/* Target Audience */}
+                      <div>
+                        <label htmlFor="targetAudience" className="block text-sm font-medium text-gray-700 mb-1">
+                          Target Audience
+                        </label>
+                        <input
+                          id="targetAudience"
+                          type="text"
+                          value={targetAudience}
+                          onChange={(e) => handleInputChange('targetAudience', e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                          placeholder="e.g., Research Scientists, Marketing Professionals"
+                        />
+                      </div>
+
+                      {/* Blog Tone */}
+                      <div>
+                        <label htmlFor="blogTone" className="block text-sm font-medium text-gray-700 mb-1">
+                          Content Tone
+                        </label>
+                        <select
+                          id="blogTone"
+                          value={blogTone || ''}
+                          onChange={(e) => handleInputChange('blogTone', e.target.value || null)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                        >
+                          <option value="">Select tone...</option>
+                          {BlogOutlineZodSchema.shape.tone.options.map((option) => (
+                            <option key={option} value={option}>
+                              {option.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase())}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Technical Depth */}
+                      <div>
+                        <label htmlFor="technicalDepth" className="block text-sm font-medium text-gray-700 mb-1">
+                          Technical Depth
+                        </label>
+                        <select
+                          id="technicalDepth"
+                          value={technicalDepth || ''}
+                          onChange={(e) => handleInputChange('technicalDepth', e.target.value || null)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                        >
+                          <option value="">Select depth...</option>
+                          {BlogOutlineZodSchema.shape.technicalDepth.options.map((option) => (
+                            <option key={option} value={option}>
+                              {option.charAt(0).toUpperCase() + option.slice(1)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Strategic Theme */}
+                      <div>
+                        <label htmlFor="strategicTheme" className="block text-sm font-medium text-gray-700 mb-1">
+                          Strategic Theme
+                        </label>
+                        <input
+                          id="strategicTheme"
+                          type="text"
+                          value={strategicTheme}
+                          onChange={(e) => handleInputChange('strategicTheme', e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                          placeholder="e.g., AI Integration, Digital Transformation"
+                        />
+                      </div>
+
+                      {/* Custom Notes */}
+                      <div>
+                        <label htmlFor="customNotes" className="block text-sm font-medium text-gray-700 mb-1">
+                          Internal Notes
+                        </label>
+                        <textarea
+                          id="customNotes"
+                          value={customNotes}
+                          onChange={(e) => handleInputChange('customNotes', e.target.value)}
+                          rows={3}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+                          placeholder="Add any internal notes or reminders about this content..."
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    // Read-only display of metadata
+                    blogData?.metadata && (
+                      <div className="space-y-3">
+                        {Object.entries(blogData.metadata).map(([key, value]) => {
+                          // Skip null/undefined/empty values and system fields
+                          if (value === null || value === undefined || value === '' || 
+                              key.startsWith('source_') || key.startsWith('shopify')) {
+                            return null;
+                          }
+
+                          // Format the key for display
+                          const displayKey = key
+                            .replace(/_/g, ' ')
+                            .replace(/([A-Z])/g, ' $1')
+                            .replace(/^./, (str) => str.toUpperCase());
+
+                          // Format the value for display
+                          let displayValue = value;
+                          if (key === 'blogTone') {
+                            displayValue = (value as string)
+                              .replace(/_/g, ' ')
+                              .replace(/\b\w/g, (l) => l.toUpperCase());
+                          } else if (key === 'technicalDepthLevel') {
+                            displayValue = (value as string).charAt(0).toUpperCase() + (value as string).slice(1);
+                          }
+
+                          return (
+                            <div key={key} className="pt-1">
+                              <p className="text-xs text-gray-500">{displayKey}</p>
+                              <p className="text-sm font-medium whitespace-pre-wrap">
+                                {typeof displayValue === 'object' ? JSON.stringify(displayValue) : String(displayValue)}
+                              </p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )
+                  )}
+                </div>
               </div>
-            )}
+            </div>
           </div>
         </div>
 
         {/* Sidebar */}
-        <div className="space-y-6">
-          {/* Meta Information */}
+        <div className="w-96 border-l border-gray-200 overflow-y-auto p-6 bg-gray-50 space-y-6">
+          {/* Blog Details */}
           <div className="bg-white rounded-xl border border-gray-200 p-6">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">Blog Details</h3>
-            
             <div className="space-y-4">
-              {/* Status */}
-              {isEditingMode && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Status
-                  </label>
-                  <select
-                    value={status}
-                    onChange={(e) => handleInputChange('status', e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                  >
-                    <option value="draft">Draft</option>
-                    <option value="published">Published</option>
-                    <option value="archived">Archived</option>
-                  </select>
-                </div>
-              )}
-
-              {/* Meta Description */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Meta Description
-                </label>
-                {isEditingMode ? (
-                  <textarea
-                    value={metaDescription}
-                    onChange={(e) => handleInputChange('metaDescription', e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                    rows={3}
-                    placeholder="SEO description..."
-                  />
-                ) : (
-                  <p className="text-sm text-gray-600">{metaDescription}</p>
-                )}
-              </div>
-
-              {/* Keywords */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Keywords
-                </label>
-                <div className="flex flex-wrap gap-2 mb-2">
-                  {keywords.map((keyword, index) => (
-                    <span
-                      key={index}
-                      className="inline-flex items-center gap-1 px-2 py-1 bg-indigo-100 text-indigo-700 rounded-md text-xs"
-                    >
-                      {keyword}
-                      {isEditingMode && (
-                        <button
-                          onClick={() => removeKeyword(index)}
-                          className="text-indigo-500 hover:text-indigo-700"
-                        >
-                          ×
-                        </button>
-                      )}
-                    </span>
-                  ))}
-                </div>
-                {isEditingMode && (
-                  <input
-                    type="text"
-                    className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm"
-                    placeholder="Add keyword and press Enter"
-                    onKeyPress={(e) => {
-                      if (e.key === 'Enter') {
-                        addKeyword(e.currentTarget.value);
-                        e.currentTarget.value = '';
-                      }
-                    }}
-                  />
-                )}
-              </div>
-
-              {blogData && (
-                <>
-                  <div className="pt-4 border-t border-gray-200">
-                    <div className="grid grid-cols-2 gap-4 text-sm">
-                      <div><p className="text-gray-500">Created</p><p className="font-medium">{new Date(blogData.createdAt).toLocaleDateString()}</p></div>
-                      <div><p className="text-gray-500">Updated</p><p className="font-medium">{new Date(blogData.updatedAt).toLocaleDateString()}</p></div>
-                    </div>
-                  </div>
-                  {(typeof blogData.views === 'number' || typeof blogData.engagement === 'number') && (
-                    <div className="pt-4 border-t border-gray-200">
-                      <div className="grid grid-cols-2 gap-4 text-sm">
-                        <div><p className="text-gray-500">Views</p><p className="font-medium">{typeof blogData.views === 'number' ? blogData.views.toLocaleString() : '-'}</p></div>
-                        <div><p className="text-gray-500">Engagement</p><p className="font-medium">{typeof blogData.engagement === 'number' ? blogData.engagement + '%' : '-'}</p></div>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
+              {/* ... existing blog details fields ... */}
             </div>
           </div>
 
-          {/* Actions */}
+          {/* Metadata Section */}
           <div className="bg-white rounded-xl border border-gray-200 p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Actions</h3>
-            
-            <div className="space-y-3">
-              <button className="w-full flex items-center gap-2 px-4 py-2 text-left text-gray-700 hover:bg-gray-50 rounded-lg transition-colors">
-                <Copy className="w-4 h-4" />
-                Duplicate Blog
-              </button>
-              
-              <button className="w-full flex items-center gap-2 px-4 py-2 text-left text-gray-700 hover:bg-gray-50 rounded-lg transition-colors">
-                <Download className="w-4 h-4" />
-                Export as PDF
-              </button>
-              
-              <button className="w-full flex items-center gap-2 px-4 py-2 text-left text-gray-700 hover:bg-gray-50 rounded-lg transition-colors">
-                <ExternalLink className="w-4 h-4" />
-                View Public URL
-              </button>
-              
-              <hr className="my-2" />
-              
-              <button className="w-full flex items-center gap-2 px-4 py-2 text-left text-red-600 hover:bg-red-50 rounded-lg transition-colors">
-                <Trash2 className="w-4 h-4" />
-                Delete Blog
-              </button>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Content Metadata</h3>
+            <div className="space-y-4">
+              {isEditingMode ? (
+                <>
+                  {/* Target Audience */}
+                  <div>
+                    <label htmlFor="targetAudience" className="block text-sm font-medium text-gray-700 mb-1">
+                      Target Audience
+                    </label>
+                    <input
+                      id="targetAudience"
+                      type="text"
+                      value={targetAudience}
+                      onChange={(e) => handleInputChange('targetAudience', e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                      placeholder="e.g., Research Scientists, Marketing Professionals"
+                    />
+                  </div>
+
+                  {/* Blog Tone */}
+                  <div>
+                    <label htmlFor="blogTone" className="block text-sm font-medium text-gray-700 mb-1">
+                      Content Tone
+                    </label>
+                    <select
+                      id="blogTone"
+                      value={blogTone || ''}
+                      onChange={(e) => handleInputChange('blogTone', e.target.value || null)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                    >
+                      <option value="">Select tone...</option>
+                      {BlogOutlineZodSchema.shape.tone.options.map((option) => (
+                        <option key={option} value={option}>
+                          {option.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase())}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Technical Depth */}
+                  <div>
+                    <label htmlFor="technicalDepth" className="block text-sm font-medium text-gray-700 mb-1">
+                      Technical Depth
+                    </label>
+                    <select
+                      id="technicalDepth"
+                      value={technicalDepth || ''}
+                      onChange={(e) => handleInputChange('technicalDepth', e.target.value || null)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                    >
+                      <option value="">Select depth...</option>
+                      {BlogOutlineZodSchema.shape.technicalDepth.options.map((option) => (
+                        <option key={option} value={option}>
+                          {option.charAt(0).toUpperCase() + option.slice(1)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Strategic Theme */}
+                  <div>
+                    <label htmlFor="strategicTheme" className="block text-sm font-medium text-gray-700 mb-1">
+                      Strategic Theme
+                    </label>
+                    <input
+                      id="strategicTheme"
+                      type="text"
+                      value={strategicTheme}
+                      onChange={(e) => handleInputChange('strategicTheme', e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                      placeholder="e.g., AI Integration, Digital Transformation"
+                    />
+                  </div>
+
+                  {/* Custom Notes */}
+                  <div>
+                    <label htmlFor="customNotes" className="block text-sm font-medium text-gray-700 mb-1">
+                      Internal Notes
+                    </label>
+                    <textarea
+                      id="customNotes"
+                      value={customNotes}
+                      onChange={(e) => handleInputChange('customNotes', e.target.value)}
+                      rows={3}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+                      placeholder="Add any internal notes or reminders about this content..."
+                    />
+                  </div>
+                </>
+              ) : (
+                // Read-only display of metadata
+                blogData?.metadata && (
+                  <div className="space-y-3">
+                    {Object.entries(blogData.metadata).map(([key, value]) => {
+                      // Skip null/undefined/empty values and system fields
+                      if (value === null || value === undefined || value === '' || 
+                          key.startsWith('source_') || key.startsWith('shopify')) {
+                        return null;
+                      }
+
+                      // Format the key for display
+                      const displayKey = key
+                        .replace(/_/g, ' ')
+                        .replace(/([A-Z])/g, ' $1')
+                        .replace(/^./, (str) => str.toUpperCase());
+
+                      // Format the value for display
+                      let displayValue = value;
+                      if (key === 'blogTone') {
+                        displayValue = (value as string)
+                          .replace(/_/g, ' ')
+                          .replace(/\b\w/g, (l) => l.toUpperCase());
+                      } else if (key === 'technicalDepthLevel') {
+                        displayValue = (value as string).charAt(0).toUpperCase() + (value as string).slice(1);
+                      }
+
+                      return (
+                        <div key={key} className="pt-1">
+                          <p className="text-xs text-gray-500">{displayKey}</p>
+                          <p className="text-sm font-medium whitespace-pre-wrap">
+                            {typeof displayValue === 'object' ? JSON.stringify(displayValue) : String(displayValue)}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )
+              )}
             </div>
           </div>
+
+          {/* Shopify Integration Status */}
+          {blogData?.metadata?.shopifyArticleId && (
+            <div className="bg-white rounded-xl border border-gray-200 p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">Shopify Status</h3>
+              <div className="space-y-2">
+                <div>
+                  <p className="text-xs text-gray-500">Status</p>
+                  <p className="text-sm font-medium text-green-600">Published on Shopify</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Shopify Article ID</p>
+                  <p className="text-sm font-medium">{blogData.metadata.shopifyArticleId}</p>
+                </div>
+                {blogData.metadata.shopifyHandle && process.env.NEXT_PUBLIC_SHOPIFY_STORE_DOMAIN && (
+                  <div>
+                    <p className="text-xs text-gray-500">Shopify URL</p>
+                    <a
+                      href={`https://${process.env.NEXT_PUBLIC_SHOPIFY_STORE_DOMAIN}/blogs/${blogData.metadata.shopifyBlogId || 'blog'}/${blogData.metadata.shopifyHandle}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sm text-indigo-600 hover:underline inline-flex items-center gap-1"
+                    >
+                      View on Shopify <ExternalLink size={14} />
+                    </a>
+                  </div>
+                )}
+                {blogData.metadata.shopifyPublishedAt && (
+                  <div>
+                    <p className="text-xs text-gray-500">Published on Shopify</p>
+                    <p className="text-sm font-medium">
+                      {new Date(blogData.metadata.shopifyPublishedAt).toLocaleString()}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

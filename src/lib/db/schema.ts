@@ -345,9 +345,30 @@ export const BlogIdeaDataSchema = z.object({
 });
 export type BlogIdeaData = z.infer<typeof BlogIdeaDataSchema>;
 
+// --- NEW: Zod Schema for Blog Post Metadata ---
+export const BlogMetadataZodSchema = z.object({
+  source_outline_task_id: z.string().optional().nullable(),
+  source_proposed_topic_id: z.string().optional().nullable(),
+  source_idea_task_id: z.string().optional().nullable(),
+  targetAudience: z.string().optional().default("Research Scientists"),
+  writerPersona: z.string().optional().nullable(),
+  blogTone: BlogOutlineZodSchema.shape.tone.optional().nullable(),
+  technicalDepthLevel: BlogOutlineZodSchema.shape.technicalDepth.optional().nullable(),
+  primary_keyword_from_outline: z.string().optional().nullable(),
+  strategic_theme: z.string().optional().nullable(),
+  custom_notes: z.string().optional().nullable(),
+  // --- NEW SHOPIFY FIELDS ---
+  shopifyBlogId: z.number().int().positive().optional().nullable(),
+  shopifyArticleId: z.number().int().positive().optional().nullable(),
+  shopifyPublishedAt: z.string().datetime({ offset: true }).optional().nullable(), // ISO string
+  shopifyHandle: z.string().optional().nullable(),
+}).strict(); // Add strict() to ensure no extra fields
+export type BlogMetadata = z.infer<typeof BlogMetadataZodSchema>;
+
 export const blogPosts = marketingSchema.table('blog_posts', {
   id: serial('id').primaryKey(),
   title: text('title').notNull(),
+  title_embedding: customVector('title_embedding', { dimensions: EMBEDDING_DIMENSIONS }),
   content: text('content'),
   productId: integer('product_id').references(() => shopifySyncProducts.id, { onDelete: 'set null' }),
   applicationId: integer('application_id').references(() => productApplications.id, { onDelete: 'set null' }),
@@ -355,10 +376,10 @@ export const blogPosts = marketingSchema.table('blog_posts', {
   outline: jsonb('outline').$type<BlogOutline>(),
   status: varchar('status', { length: 50 }).default('draft'),
   metaDescription: text('meta_description'),
-  keywords: jsonb('keywords'),
+  keywords: jsonb('keywords').$type<string[]>(), // Explicitly type as string array
   wordCount: integer('word_count'),
   type: varchar('type', { length: 50 }).default('standard_blog'),
-  metadata: jsonb('metadata'),
+  metadata: jsonb('metadata').$type<BlogMetadata>().default({ targetAudience: "Research Scientists" }), // Provide a valid default value
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   views: integer('views'),
