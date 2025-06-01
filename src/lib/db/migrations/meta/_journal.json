@@ -4,27 +4,69 @@
   "entries": [
     {
       "idx": 0,
+      "version": 1,
+      "when": 1710000000000,
+      "tag": "0000_initial",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": 2,
+      "when": 1710000000001,
+      "tag": "0001_add_blog_posts",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": 3,
+      "when": 1710000000002,
+      "tag": "0002_add_rag_system",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": 4,
+      "when": 1710000000003,
+      "tag": "0003_add_agents",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": 5,
+      "when": 1710000000004,
+      "tag": "0004_add_rag_insights",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": 6,
+      "when": 1710000000005,
+      "tag": "0005_add_video_functionality",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
       "version": "5",
       "when": 1748562871969,
       "tag": "0000_flat_hemingway",
       "breakpoints": true
     },
     {
-      "idx": 1,
+      "idx": 7,
       "version": "5",
       "when": 1748641443220,
       "tag": "0001_fearless_the_santerians",
       "breakpoints": true
     },
     {
-      "idx": 2,
+      "idx": 8,
       "version": "5",
       "when": 1748741742719,
       "tag": "0002_organic_chimera",
       "breakpoints": true
     },
     {
-      "idx": 3,
+      "idx": 9,
       "version": "5",
       "when": 1748800000000,
       "tag": "0003_add_blog_metrics",

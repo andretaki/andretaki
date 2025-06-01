@@ -555,4 +555,110 @@ export type ProductApplication = typeof productApplications.$inferSelect;
 export type BlogPost = typeof blogPosts.$inferSelect;
 export type ContentPipelineTask = typeof contentPipeline.$inferSelect;
 export type ProposedTopic = typeof proposedTopics.$inferSelect;
-export type SeoPerformanceEntry = typeof seoPerformance.$inferSelect; 
+export type SeoPerformanceEntry = typeof seoPerformance.$inferSelect;
+
+// --- NEW Video Related Tables ---
+export const videoPersonas = marketingSchema.table('video_personas', {
+    id: serial('id').primaryKey(),
+    name: varchar('name', { length: 255 }).notNull().unique(),
+    description: text('description').notNull(),
+    style_prompt_modifier: text('style_prompt_modifier'), // e.g., "Act as a quirky chemistry professor with a dry wit"
+    humor_style: varchar('humor_style', { length: 100 }), // e.g., "sarcastic", "pun-based", "observational"
+    visual_theme_keywords: jsonb('visual_theme_keywords').$type<string[]>(), // e.g., ["vintage_diagrams", "neon_accents", "minimalist_lab"]
+    voice_characteristics: jsonb('voice_characteristics'), // e.g., { "tone": "deep", "pace": "moderate", "accent": "british_english" }
+    music_style_keywords: jsonb('music_style_keywords').$type<string[]>(), // e.g., ["lofi_beats", "cinematic_orchestral", "upbeat_electronic"]
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const videos = marketingSchema.table('videos', {
+    id: serial('id').primaryKey(),
+    product_id: integer('product_id').references(() => shopifySyncProducts.id, { onDelete: 'set null' }),
+    blog_post_id: integer('blog_post_id').references(() => blogPosts.id, { onDelete: 'set null' }),
+    video_persona_id: integer('video_persona_id').references(() => videoPersonas.id, { onDelete: 'set null' }),
+    title: varchar('title', { length: 255 }).notNull(),
+    description: text('description'),
+    keywords: jsonb('keywords').$type<string[]>(),
+    platform_and_goal: varchar('platform_and_goal', { length: 255 }).notNull(), // e.g., "youtube_educational_product_deep_dive"
+    status: varchar('status', { length: 50 }).default('pending_strategy').notNull(), // pending_strategy, strategizing, pending_segment_scripts, scripting_in_progress, ready_for_assets, assets_in_progress, completed, error_strategy, error_scripting, error_assets
+    error_message: text('error_message'),
+    suggested_ad_keywords: jsonb('suggested_ad_keywords').$type<string[]>(),
+    suggested_target_audience_descriptors: jsonb('suggested_target_audience_descriptors').$type<string[]>(),
+    final_video_url: text('final_video_url'),
+    created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const videoSegments = marketingSchema.table('video_segments', {
+    id: serial('id').primaryKey(),
+    video_id: integer('video_id').references(() => videos.id, { onDelete: 'cascade' }).notNull(),
+    segment_order: integer('segment_order').notNull(),
+    segment_type: varchar('segment_type', { length: 100 }).notNull(), // e.g., "Hook", "Problem", "SolutionDemo", "Benefit", "CTA"
+    duration_seconds: integer('duration_seconds').notNull(),
+    
+    // From Strategy Phase (initial ideas)
+    key_info_points: jsonb('key_info_points').$type<string[]>(), // Key bullet points for this segment from strategy
+    visual_angle: text('visual_angle'), // Initial creative visual idea from strategy
+    narration_angle: text('narration_angle'), // Initial tone/direction for script from strategy
+
+    // From Scripting Phase (detailed content)
+    narration_script: text('narration_script'), // The actual script
+    visual_concept_description: text('visual_concept_description'), // Detailed visual concept for asset generation
+    visual_generation_prompts: jsonb('visual_generation_prompts').$type<string[]>(), // Prompts for DALL-E, RunwayML etc.
+    text_overlay_content: jsonb('text_overlay_content').$type<string[]>(), // Text to display on screen
+
+    // Asset related fields (for future)
+    visual_asset_url: text('visual_asset_url'),
+    voiceover_asset_url: text('voiceover_asset_url'),
+    
+    // Tracking & Misc
+    status: varchar('status', { length: 50 }).default('pending').notNull(), // pending, scripting_in_progress, script_completed, asset_generation_pending, assets_ready, error
+    error_message: text('error_message'),
+    source_product_id: integer('source_product_id').references(() => shopifySyncProducts.id, { onDelete: 'set null' }), // If segment focuses on specific product
+    rag_insights_summary: text('rag_insights_summary'), // Summary of RAG insights used for this segment
+    created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+    idx_video_segments_video_id: index('idx_video_segments_video_id').on(table.video_id),
+    unique_video_segment_order: uniqueIndex('unique_video_segment_order_idx').on(table.video_id, table.segment_order),
+}));
+
+// --- Relations for new Video tables ---
+export const videoPersonasRelations = relations(videoPersonas, ({ many }) => ({
+    videos: many(videos),
+}));
+
+export const videosRelations = relations(videos, ({ one, many }) => ({
+    product: one(shopifySyncProducts, {
+        fields: [videos.product_id],
+        references: [shopifySyncProducts.id],
+    }),
+    blogPost: one(blogPosts, {
+        fields: [videos.blog_post_id],
+        references: [blogPosts.id],
+    }),
+    videoPersona: one(videoPersonas, {
+        fields: [videos.video_persona_id],
+        references: [videoPersonas.id],
+    }),
+    videoSegments: many(videoSegments),
+}));
+
+export const videoSegmentsRelations = relations(videoSegments, ({ one }) => ({
+    video: one(videos, {
+        fields: [videoSegments.video_id],
+        references: [videos.id],
+    }),
+    sourceProduct: one(shopifySyncProducts, {
+        fields: [videoSegments.source_product_id],
+        references: [shopifySyncProducts.id],
+    }),
+}));
+
+// Add to existing type exports
+export type VideoPersona = typeof videoPersonas.$inferSelect;
+export type NewVideoPersona = typeof videoPersonas.$inferInsert;
+export type Video = typeof videos.$inferSelect;
+export type NewVideo = typeof videos.$inferInsert;
+export type VideoSegment = typeof videoSegments.$inferSelect;
+export type NewVideoSegment = typeof videoSegments.$inferInsert; 

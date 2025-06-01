@@ -1,115 +1,93 @@
 import { BaseAgent } from './base-agent';
 import { AgentResult } from '../../types/agents';
-import { VideoSegment, VideoPersona, Product, BlogPost, ProductApplications } from '../db/schema';
-import { db } from '../db';
-import { eq } from 'drizzle-orm';
+import { Product, VideoPersona, BlogPost, VideoSegment, productApplications } from '../db/schema';
+import { VideoSegmentScriptingLLMOutputSchema, VideoSegmentScriptingLLMOutput as LLMOutputType } from '../validations/video';
 
-interface ScriptingOutput {
-    narration_script: string;
-    visual_concept_description: string;
-    visual_generation_prompts: string[];
-    text_overlay_content: string[];
-}
+export type ScriptingOutput = LLMOutputType; // The agent output is the same as the LLM output for this agent
 
 export class VideoSegmentScriptingAgent extends BaseAgent {
     async execute(
         segment: VideoSegment,
         product: Product,
         persona: VideoPersona,
-        blogPost?: BlogPost,
-        application?: ProductApplications
+        videoMasterTitle: string,
+        blogPost?: BlogPost, // Optional blog post context
+        application?: typeof productApplications.$inferSelect // Optional application context
     ): Promise<AgentResult<ScriptingOutput>> {
         return this.executeWithRetry(async () => {
-            // Fetch additional context if needed
-            const sourceData = {
-                blog: blogPost ? {
-                    title: blogPost.title,
-                    excerpt: blogPost.excerpt,
-                    content: blogPost.content?.substring(0, 300)
-                } : null,
-                application: application ? {
-                    name: application.application,
-                    industry: application.industry,
-                    useCase: application.useCase,
-                    technicalDetails: application.technicalDetails
-                } : null
-            };
-
-            const prompt = `
-                Create engaging content for a video segment about "${product.title}" (CAS: ${product.casNumber}).
-                
-                Segment Details:
-                - Type: ${segment.segment_type}
-                - Duration: ${segment.duration_seconds} seconds
-                - Order: ${segment.segment_order}
-                
-                Persona Style:
-                - Name: ${persona.name}
-                - Description: ${persona.description}
-                - Style Modifier: ${persona.style_prompt_modifier}
-                - Humor Style: ${persona.humor_style}
-                - Visual Keywords: ${persona.visual_theme_keywords?.join(', ')}
-                - Voice: ${JSON.stringify(persona.voice_characteristics)}
-                
-                Source Data:
-                - Product Description: ${product.description || 'N/A'}
-                - Properties: ${JSON.stringify(product.properties) || 'Standard chemical properties'}
-                - Safety Info: ${JSON.stringify(product.safetyInfo)?.substring(0,200) || 'Standard safety precautions apply.'}
-                ${sourceData.blog ? `- Blog Context: ${sourceData.blog.title} - ${sourceData.blog.excerpt || sourceData.blog.content}` : ''}
-                ${sourceData.application ? `- Application Context: ${sourceData.application.name} in ${sourceData.application.industry} - ${sourceData.application.useCase}` : ''}
-
-                Generate a JSON object with:
-                1. "narration_script": (string) A concise, engaging script (${segment.duration_seconds} seconds) that matches the persona's style and humor.
-                2. "visual_concept_description": (string) A detailed description of the visual concept, incorporating the persona's visual keywords.
-                3. "visual_generation_prompts": (array of strings) 2-3 specific prompts for image/video AI models (DALL-E, Midjourney, RunwayML).
-                4. "text_overlay_content": (array of strings) 2-4 text overlays to appear during the segment (e.g., key points, jokes, callouts).
-
-                Guidelines:
-                - Keep the narration script concise and engaging
-                - Ensure visual concepts align with the persona's style
-                - Make text overlays impactful but not overwhelming
-                - Incorporate humor and style from the persona
-                - Focus on the key information for this segment type
-            `;
-
-            const llmResponse = await this.openai.chat.completions.create({
-                model: "gpt-4-turbo",
-                messages: [
-                    { role: "system", content: "You are a creative video scripting AI that specializes in creating engaging, persona-driven content." },
-                    { role: "user", content: prompt }
-                ],
-                response_format: { type: "json_object" },
-            });
-
-            const content = llmResponse.choices[0].message.content;
-            if (!content) throw new Error("No scripting content generated");
-
-            const parsedScript = JSON.parse(content);
-
-            // Validate the output structure
-            if (!parsedScript.narration_script || !parsedScript.visual_concept_description || 
-                !Array.isArray(parsedScript.visual_generation_prompts) || !Array.isArray(parsedScript.text_overlay_content)) {
-                throw new Error("Invalid scripting output structure");
+            // 1. Context Gathering (already mostly passed in, but can augment)
+            let blogContextSnippet = "";
+            if (blogPost && segment.segment_type.toLowerCase().includes('blog')) { // Example: only include if relevant to segment type
+                blogContextSnippet = `Relevant Blog Post ("${blogPost.title}") Excerpt: ${blogPost.content?.substring(0, 150)}...`;
+            }
+            let applicationContextSnippet = "";
+            if (application && segment.segment_type.toLowerCase().includes('application')) {
+                applicationContextSnippet = `Relevant Application: ${application.application} (${application.industry}). Use Case: ${application.useCase?.substring(0,150)}...`;
             }
 
-            const resultData: ScriptingOutput = {
-                narration_script: parsedScript.narration_script,
-                visual_concept_description: parsedScript.visual_concept_description,
-                visual_generation_prompts: parsedScript.visual_generation_prompts,
-                text_overlay_content: parsedScript.text_overlay_content
-            };
+            // 2. LLM Prompt Construction
+            const systemPrompt = `You are a creative scriptwriter and visual director, embodying the persona: "${persona.name}" (${persona.description}). Your style is ${persona.style_prompt_modifier || 'engaging and clear'} with ${persona.humor_style || 'appropriate humor'}. Your output must be a JSON object adhering to the VideoSegmentScriptingLLMOutputSchema.`;
+            
+            const userPrompt = `
+                Video Master Title: "${videoMasterTitle}"
+                Product: ${product.title} (CAS: ${(product.metafields as any)?.cas_number || 'N/A'})
+                Persona: ${persona.name}
+                - Visual Keywords: ${persona.visual_theme_keywords?.join(', ') || 'standard corporate clean'}
+                - Voice Characteristics: ${JSON.stringify(persona.voice_characteristics) || 'clear, professional'}
 
-            await this.logActivity(
-                'video_segment_scripting',
-                'video_segment',
-                segment.id,
-                'generate_script',
-                { segment_type: segment.segment_type },
-                true,
-                llmResponse.usage?.total_tokens || 0
-            );
+                Segment Details to Script:
+                - Type: ${segment.segment_type}
+                - Estimated Duration: ${segment.duration_seconds} seconds
+                - Key Info Points (from strategy): ${(segment.key_info_points as string[])?.join('; ') || 'N/A'}
+                - Initial Visual Angle (from strategy): ${segment.visual_angle || 'N/A'}
+                - Initial Narration Angle (from strategy): ${segment.narration_angle || 'N/A'}
 
-            return resultData;
-        }, 'Generate Segment Script');
+                Additional Context (if available):
+                ${blogContextSnippet}
+                ${applicationContextSnippet}
+                - Product Description: ${product.description?.substring(0,200) || 'N/A'}
+
+                Your Task: Generate a JSON object with the following fields for this segment:
+                1. "narration_script": Concise, engaging script matching persona and segment duration.
+                2. "visual_concept_description": Detailed visual idea evolving from the initial visual_angle, incorporating persona's visual keywords.
+                3. "visual_generation_prompts": 2-3 specific prompts for AI image/video models (e.g., DALL-E, RunwayML) based on the visual concept.
+                4. "text_overlay_content": 2-4 short text overlays to enhance the message or add persona flavor.
+
+                Make sure the script is timed well for ${segment.duration_seconds} seconds.
+                The visual prompts should be creative and leverage the persona's visual style.
+            `;
+
+            // 3. LLM Call & Validation
+            const llmResponse = await this.geminiPro.generateContent({
+                contents: [{ role: 'user', parts: [{ text: systemPrompt + "\n\n" + userPrompt }] }],
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    temperature: this.config.temperature, // Use agent's base config or specific one
+                    maxOutputTokens: this.config.maxTokens,
+                }
+            });
+            
+            const rawJsonText = llmResponse.response.text();
+            if (!rawJsonText) {
+                throw new Error("LLM returned empty response for segment scripting.");
+            }
+
+            let parsedOutput: ScriptingOutput;
+            try {
+                parsedOutput = VideoSegmentScriptingLLMOutputSchema.parse(JSON.parse(rawJsonText));
+            } catch (e) {
+                console.error("Failed to parse or validate LLM output for VideoSegmentScripting:", e);
+                console.error("Raw LLM output:", rawJsonText);
+                throw new Error(`LLM output validation failed: ${e instanceof Error ? e.message : String(e)}`);
+            }
+
+            await this.logActivity('video_segment_scripting', 'video_segment', segment.id, 'generate_script_details', {
+                video_id: segment.video_id,
+                segment_type: segment.segment_type,
+            }, true, 0 /* TODO: Token count */);
+
+            return parsedOutput;
+
+        }, 'video_segment_scripting'); // Add context parameter
     }
 } 
