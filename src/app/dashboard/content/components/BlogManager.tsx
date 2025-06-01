@@ -21,7 +21,11 @@ import {
   Plus,
   ArrowUpRight,
   Bookmark,
-  Star
+  Star,
+  AlertCircle,
+  ChevronUp,
+  ChevronDown,
+  Loader
 } from 'lucide-react';
 
 interface BlogPost {
@@ -43,6 +47,8 @@ interface BlogPost {
 
 interface BlogManagerProps {
   onCreateNew?: () => void;
+  onViewBlog: (id: number) => void;
+  onEditBlog: (id: number) => void;
 }
 
 // Move helper functions outside of component
@@ -64,98 +70,141 @@ const getStatusIcon = (status: string) => {
   }
 };
 
-export default function BlogManager({ onCreateNew }: BlogManagerProps) {
+export default function BlogManager({ onCreateNew, onViewBlog, onEditBlog }: BlogManagerProps) {
   const [blogs, setBlogs] = useState<BlogPost[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'draft' | 'published' | 'archived'>('all');
   const [selectedBlogs, setSelectedBlogs] = useState<number[]>([]);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [totalBlogs, setTotalBlogs] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+  const [currentPage, setCurrentPage] = useState(0);
+  const [sortBy, setSortBy] = useState('updatedAt');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const blogsPerPage = 10;
 
-  useEffect(() => {
-    fetchBlogs();
-  }, []);
-
-  const fetchBlogs = async () => {
+  const fetchBlogs = async (page = 0, append = false) => {
     try {
       setLoading(true);
-      const response = await fetch('/api/blogs');
-      if (response.ok) {
-        const data = await response.json();
-        setBlogs(data.blogs || []);
+      setError(null);
+      const offset = page * blogsPerPage;
+
+      const params = new URLSearchParams({
+        limit: blogsPerPage.toString(),
+        offset: offset.toString(),
+        sortBy,
+        sortOrder,
+      });
+      if (searchTerm) params.append('searchTerm', searchTerm);
+      if (statusFilter !== 'all') params.append('status', statusFilter);
+
+      const response = await fetch(`/api/blogs?${params.toString()}`);
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `Failed to fetch blogs (status ${response.status})`);
+      }
+      const data = await response.json();
+      if (data.success) {
+        setBlogs(prev => append ? [...prev, ...data.blogs] : data.blogs);
+        setTotalBlogs(data.total);
+        setHasMore(data.hasMore);
+        setCurrentPage(page);
+      } else {
+        throw new Error(data.error || 'Invalid response format from blogs API');
       }
     } catch (error) {
       console.error('Failed to fetch blogs:', error);
-      // Mock data for demo
-      setBlogs([
-        {
-          id: 1,
-          title: "Benzyl Chloride Applications in Pharmaceutical Synthesis",
-          slug: "benzyl-chloride-pharmaceutical-synthesis",
-          content: "Lorem ipsum...",
-          status: 'published',
-          createdAt: '2024-01-15T10:00:00Z',
-          updatedAt: '2024-01-15T10:00:00Z',
-          productName: "Benzyl Chloride",
-          targetAudience: "Research Scientists",
-          wordCount: 1250,
-          keywords: ["pharmaceutical", "synthesis", "organic chemistry"],
-          metaDescription: "Explore the key applications of benzyl chloride in pharmaceutical synthesis...",
-          views: 1240,
-          engagement: 85
-        },
-        {
-          id: 2,
-          title: "Safety Protocols for Handling Reactive Organometallic Compounds",
-          slug: "safety-protocols-organometallic-compounds",
-          content: "Lorem ipsum...",
-          status: 'draft',
-          createdAt: '2024-01-14T15:30:00Z',
-          updatedAt: '2024-01-14T15:30:00Z',
-          productName: "Grignard Reagents",
-          targetAudience: "Lab Managers",
-          wordCount: 980,
-          keywords: ["safety", "organometallic", "lab protocols"],
-          metaDescription: "Comprehensive safety guidelines for working with organometallic compounds...",
-          views: 0,
-          engagement: 0
-        },
-        {
-          id: 3,
-          title: "Innovative Uses of Sodium Borohydride in Green Chemistry",
-          slug: "sodium-borohydride-green-chemistry",
-          content: "Lorem ipsum...",
-          status: 'published',
-          createdAt: '2024-01-13T09:15:00Z',
-          updatedAt: '2024-01-13T09:15:00Z',
-          productName: "Sodium Borohydride",
-          targetAudience: "Environmental Chemists",
-          wordCount: 1450,
-          keywords: ["green chemistry", "reduction", "sustainability"],
-          metaDescription: "Discover how sodium borohydride enables sustainable chemical processes...",
-          views: 890,
-          engagement: 92
-        }
-      ]);
+      setError(error instanceof Error ? error.message : String(error));
+      if (!append) setBlogs([]);
     } finally {
       setLoading(false);
     }
   };
 
-  const filteredBlogs = blogs.filter(blog => {
-    const matchesSearch = blog.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         blog.productName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         blog.keywords.some(k => k.toLowerCase().includes(searchTerm.toLowerCase()));
-    const matchesStatus = statusFilter === 'all' || blog.status === statusFilter;
-    return matchesSearch && matchesStatus;
-  });
+  useEffect(() => {
+    fetchBlogs(0, false);
+  }, [searchTerm, statusFilter, sortBy, sortOrder]);
 
-  const handleBulkAction = (action: string) => {
-    console.log(`Bulk action: ${action} on blogs:`, selectedBlogs);
-    // Implement bulk actions
+  const handleSearchInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchTerm(e.target.value);
+    setCurrentPage(0);
   };
 
-  if (loading) {
+  const handleStatusFilterChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setStatusFilter(e.target.value as any);
+    setCurrentPage(0);
+  };
+
+  const handleSortChange = (newSortBy: string) => {
+    setCurrentPage(0);
+    if (newSortBy === sortBy) {
+      setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortBy(newSortBy);
+      setSortOrder('desc');
+    }
+  };
+
+  const handleLoadMore = () => {
+    if (hasMore && !loading) {
+      fetchBlogs(currentPage + 1, true);
+    }
+  };
+
+  const handleBulkAction = async (action: 'publish' | 'archive' | 'delete') => {
+    if (selectedBlogs.length === 0) {
+      alert('Please select at least one blog post.');
+      return;
+    }
+
+    const confirmMessage = {
+      publish: 'Are you sure you want to publish the selected blog posts?',
+      archive: 'Are you sure you want to archive the selected blog posts?',
+      delete: 'Are you sure you want to delete the selected blog posts? This action cannot be undone.'
+    }[action];
+
+    if (!confirm(confirmMessage)) {
+      return;
+    }
+
+    try {
+      const promises = selectedBlogs.map(async (blogId) => {
+        if (action === 'delete') {
+          const response = await fetch(`/api/blogs/${blogId}`, {
+            method: 'DELETE'
+          });
+          if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || `Failed to delete blog ${blogId}`);
+          }
+        } else {
+          const response = await fetch(`/api/blogs/${blogId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              status: action === 'publish' ? 'published' : 'archived'
+            })
+          });
+          if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || `Failed to ${action} blog ${blogId}`);
+          }
+        }
+      });
+
+      await Promise.all(promises);
+      setSelectedBlogs([]);
+      fetchBlogs(); // Refresh the list
+      alert(`Successfully ${action}ed ${selectedBlogs.length} blog post(s).`);
+    } catch (error) {
+      console.error(`Failed to ${action} blogs:`, error);
+      alert(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  if (loading && currentPage === 0 && blogs.length === 0) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="text-center">
@@ -166,6 +215,34 @@ export default function BlogManager({ onCreateNew }: BlogManagerProps) {
     );
   }
 
+  if (error && blogs.length === 0) {
+    return (
+      <div className="text-center py-12 bg-white rounded-xl border border-gray-200">
+        <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-4" />
+        <h3 className="text-lg font-semibold text-gray-900 mb-2">Error Loading Blogs</h3>
+        <p className="text-gray-600 mb-4">{error}</p>
+        <button 
+          onClick={() => fetchBlogs(0, false)}
+          className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+        >
+          Try Again
+        </button>
+      </div>
+    );
+  }
+
+  const SortableHeader = ({ columnKey, children }: { columnKey: string; children: React.ReactNode }) => (
+    <button 
+      onClick={() => handleSortChange(columnKey)} 
+      className="flex items-center gap-1 hover:text-indigo-600"
+    >
+      {children}
+      {sortBy === columnKey && (
+        sortOrder === 'asc' ? <ChevronUp size={14} /> : <ChevronDown size={14} />
+      )}
+    </button>
+  );
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -173,7 +250,7 @@ export default function BlogManager({ onCreateNew }: BlogManagerProps) {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Blog Management</h1>
           <p className="text-gray-600 mt-1">
-            Manage your AI-generated chemical content • {blogs.length} total blogs
+            Manage your AI-generated chemical content • {totalBlogs} total blogs
           </p>
         </div>
         <button 
@@ -249,41 +326,79 @@ export default function BlogManager({ onCreateNew }: BlogManagerProps) {
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
               <input
                 type="text"
-                placeholder="Search blogs, products, keywords..."
+                placeholder="Search title, meta, product..."
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                onChange={handleSearchInputChange}
                 className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
               />
             </div>
             
             <select
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as any)}
+              onChange={handleStatusFilterChange}
               className="px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
             >
               <option value="all">All Status</option>
-              <option value="published">Published</option>
               <option value="draft">Draft</option>
+              <option value="published">Published</option>
               <option value="archived">Archived</option>
             </select>
+
+            <div className="relative group">
+              <button className="p-2 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors flex items-center gap-1">
+                <Filter className="w-4 h-4" /> Sort By
+              </button>
+              <div className="absolute z-10 mt-1 w-48 bg-white rounded-md shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-150 pointer-events-none group-hover:pointer-events-auto">
+                <div className="py-1">
+                  {[
+                    { key: 'updatedAt', label: 'Last Updated' },
+                    { key: 'createdAt', label: 'Created Date' },
+                    { key: 'title', label: 'Title' },
+                    { key: 'status', label: 'Status' },
+                    { key: 'wordCount', label: 'Word Count' },
+                    { key: 'views', label: 'Views' }
+                  ].map(({ key, label }) => (
+                    <a
+                      key={key}
+                      href="#"
+                      onClick={(e) => { e.preventDefault(); handleSortChange(key); }}
+                      className={`block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${
+                        sortBy === key ? 'font-semibold text-indigo-600' : ''
+                      }`}
+                    >
+                      {label}
+                      {sortBy === key && (sortOrder === 'asc' ? ' ↑' : ' ↓')}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
             {selectedBlogs.length > 0 && (
               <div className="flex items-center gap-2">
                 <span className="text-sm text-gray-600">{selectedBlogs.length} selected</span>
-                <button className="px-3 py-1 bg-emerald-100 text-emerald-700 rounded-md text-sm hover:bg-emerald-200 transition-colors">
+                <button 
+                  onClick={() => handleBulkAction('publish')}
+                  className="px-3 py-1 bg-emerald-100 text-emerald-700 rounded-md text-sm hover:bg-emerald-200 transition-colors"
+                >
                   Publish
                 </button>
-                <button className="px-3 py-1 bg-red-100 text-red-700 rounded-md text-sm hover:bg-red-200 transition-colors">
+                <button 
+                  onClick={() => handleBulkAction('archive')}
+                  className="px-3 py-1 bg-gray-100 text-gray-700 rounded-md text-sm hover:bg-gray-200 transition-colors"
+                >
+                  Archive
+                </button>
+                <button 
+                  onClick={() => handleBulkAction('delete')}
+                  className="px-3 py-1 bg-red-100 text-red-700 rounded-md text-sm hover:bg-red-200 transition-colors"
+                >
                   Delete
                 </button>
               </div>
             )}
-            
-            <button className="p-2 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-              <Filter className="w-4 h-4" />
-            </button>
             
             <div className="flex border border-gray-200 rounded-lg">
               <button
@@ -313,7 +428,7 @@ export default function BlogManager({ onCreateNew }: BlogManagerProps) {
       </div>
 
       {/* Blog Grid/List */}
-      {filteredBlogs.length === 0 ? (
+      {blogs.length === 0 ? (
         <div className="text-center py-12 bg-white rounded-xl border border-gray-200">
           <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
           <h3 className="text-lg font-semibold text-gray-900 mb-2">No blogs found</h3>
@@ -334,7 +449,7 @@ export default function BlogManager({ onCreateNew }: BlogManagerProps) {
           ? "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" 
           : "space-y-4"
         }>
-          {filteredBlogs.map((blog) => (
+          {blogs.map((blog) => (
             <BlogCard
               key={blog.id}
               blog={blog}
@@ -347,8 +462,29 @@ export default function BlogManager({ onCreateNew }: BlogManagerProps) {
                   setSelectedBlogs(selectedBlogs.filter(id => id !== blog.id));
                 }
               }}
+              onViewBlog={() => onViewBlog(blog.id)}
+              onEditBlog={() => onEditBlog(blog.id)}
             />
           ))}
+        </div>
+      )}
+
+      {/* Load More */}
+      {hasMore && !loading && (
+        <div className="text-center">
+          <button
+            onClick={handleLoadMore}
+            className="px-6 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+          >
+            Load More
+          </button>
+        </div>
+      )}
+
+      {/* Loading Indicator for Pagination */}
+      {loading && currentPage > 0 && (
+        <div className="text-center py-4">
+          <Loader className="animate-spin w-6 h-6 text-indigo-600 mx-auto" />
         </div>
       )}
     </div>
@@ -360,9 +496,38 @@ interface BlogCardProps {
   viewMode: 'grid' | 'list';
   isSelected: boolean;
   onSelect: (selected: boolean) => void;
+  onViewBlog: () => void;
+  onEditBlog: () => void;
 }
 
-const BlogCard: React.FC<BlogCardProps> = ({ blog, viewMode, isSelected, onSelect }) => {
+const BlogCard: React.FC<BlogCardProps> = ({ 
+  blog, 
+  viewMode, 
+  isSelected, 
+  onSelect,
+  onViewBlog,
+  onEditBlog
+}) => {
+  // Update the buttons in both list and grid views
+  const actionButtons = (
+    <div className="flex items-center gap-2">
+      <button 
+        onClick={onViewBlog}
+        className="flex items-center gap-1 px-3 py-1 text-indigo-600 bg-indigo-50 rounded-md text-sm hover:bg-indigo-100 transition-colors"
+      >
+        <Eye className="w-3 h-3" />
+        View
+      </button>
+      <button 
+        onClick={onEditBlog}
+        className="flex items-center gap-1 px-3 py-1 text-gray-600 bg-gray-50 rounded-md text-sm hover:bg-gray-100 transition-colors"
+      >
+        <Edit3 className="w-3 h-3" />
+        Edit
+      </button>
+    </div>
+  );
+
   if (viewMode === 'list') {
     return (
       <div className="bg-white rounded-xl border border-gray-200 p-6 hover:shadow-md transition-all">
@@ -419,20 +584,7 @@ const BlogCard: React.FC<BlogCardProps> = ({ blog, viewMode, isSelected, onSelec
               )}
             </div>
             
-            <div className="flex items-center gap-2">
-              <button className="flex items-center gap-1 px-3 py-1 text-indigo-600 bg-indigo-50 rounded-md text-sm hover:bg-indigo-100 transition-colors">
-                <Eye className="w-3 h-3" />
-                View
-              </button>
-              <button className="flex items-center gap-1 px-3 py-1 text-gray-600 bg-gray-50 rounded-md text-sm hover:bg-gray-100 transition-colors">
-                <Edit3 className="w-3 h-3" />
-                Edit
-              </button>
-              <button className="flex items-center gap-1 px-3 py-1 text-gray-600 bg-gray-50 rounded-md text-sm hover:bg-gray-100 transition-colors">
-                <Share2 className="w-3 h-3" />
-                Share
-              </button>
-            </div>
+            {actionButtons}
           </div>
         </div>
       </div>
@@ -488,14 +640,17 @@ const BlogCard: React.FC<BlogCardProps> = ({ blog, viewMode, isSelected, onSelec
           </span>
           
           <div className="flex items-center gap-1">
-            <button className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors">
+            <button 
+              onClick={onViewBlog}
+              className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+            >
               <Eye className="w-4 h-4" />
             </button>
-            <button className="p-2 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors">
+            <button 
+              onClick={onEditBlog}
+              className="p-2 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+            >
               <Edit3 className="w-4 h-4" />
-            </button>
-            <button className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors">
-              <Share2 className="w-4 h-4" />
             </button>
           </div>
         </div>

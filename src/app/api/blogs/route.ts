@@ -1,13 +1,55 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '../../../lib/db';
-import { blogPosts, shopifySyncProducts } from '../../../lib/db/schema';
-import { eq, desc, sql } from 'drizzle-orm';
+import { blogPosts, shopifySyncProducts, type BlogPost } from '../../../lib/db/schema';
+import { eq, desc, asc, sql, like, or, and, SQL } from 'drizzle-orm';
+
+// Define valid sort columns and their corresponding table columns
+const validSortColumns = {
+  title: blogPosts.title,
+  status: blogPosts.status,
+  createdAt: blogPosts.createdAt,
+  updatedAt: blogPosts.updatedAt,
+  wordCount: blogPosts.wordCount,
+  views: blogPosts.views,
+  engagement: blogPosts.engagement,
+  productName: shopifySyncProducts.title,
+} as const;
+
+type ValidSortColumn = keyof typeof validSortColumns;
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const limit = parseInt(searchParams.get('limit') || '50');
+    const limit = parseInt(searchParams.get('limit') || '10'); // Default to 10 for better UX
     const offset = parseInt(searchParams.get('offset') || '0');
+    const searchTerm = searchParams.get('searchTerm') || '';
+    const status = searchParams.get('status') || 'all';
+    const sortBy = (searchParams.get('sortBy') || 'updatedAt') as ValidSortColumn;
+    const sortOrder = searchParams.get('sortOrder') || 'desc';
+
+    // Validate sort column
+    if (!validSortColumns[sortBy]) {
+      return NextResponse.json(
+        { error: `Invalid sort column: ${sortBy}. Valid columns are: ${Object.keys(validSortColumns).join(', ')}` },
+        { status: 400 }
+      );
+    }
+
+    // Build conditions
+    const conditions: SQL[] = [];
+    if (searchTerm) {
+      conditions.push(
+        or(
+          like(blogPosts.title, `%${searchTerm}%`),
+          like(blogPosts.metaDescription, `%${searchTerm}%`),
+          like(shopifySyncProducts.title, `%${searchTerm}%`),
+          sql`${blogPosts.keywords}::text ILIKE ${`%${searchTerm}%`}`
+        )
+      );
+    }
+    if (status !== 'all') {
+      conditions.push(eq(blogPosts.status, status));
+    }
 
     // Get blogs with product information
     const blogsData = await db
@@ -33,45 +75,66 @@ export async function GET(request: NextRequest) {
       })
       .from(blogPosts)
       .leftJoin(shopifySyncProducts, eq(blogPosts.productId, shopifySyncProducts.id))
-      .orderBy(desc(blogPosts.createdAt))
+      .where(conditions.length > 0 ? and(...conditions) : sql`1=1`) // Use a true condition when no filters
+      .orderBy(sortOrder === 'asc' ? asc(validSortColumns[sortBy]) : desc(validSortColumns[sortBy]))
       .limit(limit)
       .offset(offset);
 
     // Transform the data to match the frontend interface
-    const transformedBlogs = blogsData.map(blog => {
-      const metadata = (blog.metadata as any) || {}; // Ensure metadata is an object
+    const transformedBlogs = blogsData.map((blog): BlogPost & { productName: string } => {
+      const metadata = (blog.metadata as any) || {};
       const calculatedSlug = blog.slug || blog.title?.toLowerCase()
         .replace(/[^\w\s-]/g, '')
         .replace(/\s+/g, '-')
         .substring(0, 250) || '';
-      const calculatedWordCount = blog.wordCount || (blog.content ? blog.content.split(/\s+/).filter(w => w).length : 0);
+      const calculatedWordCount = blog.wordCount || (blog.content ? blog.content.split(/\s+/).filter((w: string) => w).length : 0);
       const calculatedMetaDescription = blog.metaDescription || (blog.content ? blog.content.substring(0, 160) + '...' : '');
+      
+      // Ensure keywords is always an array of strings
+      let keywords: string[] = [];
+      if (Array.isArray(blog.keywords)) {
+        keywords = blog.keywords;
+      } else if (typeof blog.keywords === 'string') {
+        keywords = blog.keywords.split(',').map(k => k.trim());
+      }
+
       return {
         id: blog.id,
         title: blog.title,
         slug: calculatedSlug,
         content: blog.content || '',
         status: (blog.status as 'draft' | 'published' | 'archived') || 'draft',
-        createdAt: blog.createdAt.toISOString(),
-        updatedAt: blog.updatedAt.toISOString(),
+        createdAt: blog.createdAt,
+        updatedAt: blog.updatedAt,
         productName: blog.productTitle || 'Unknown Product',
-        targetAudience: metadata.targetAudience || 'Research Scientists',
         wordCount: calculatedWordCount,
-        keywords: (Array.isArray(blog.keywords) ? blog.keywords : []) as string[],
+        keywords,
         metaDescription: calculatedMetaDescription,
-        views: blog.views ?? Math.floor(Math.random() * 2000),
-        engagement: blog.engagement ?? Math.floor(Math.random() * 100),
+        views: blog.views ?? 0,
+        engagement: blog.engagement ?? 0,
+        productId: blog.productId,
+        applicationId: blog.applicationId,
+        outline: blog.outline,
+        type: blog.type,
+        metadata: blog.metadata,
       };
     });
 
-    const totalCountResult = await db.select({count: sql`count(*)::int`}).from(blogPosts);
+    // Get total count with the same filters
+    const totalCountResult = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(blogPosts)
+      .leftJoin(shopifySyncProducts, eq(blogPosts.productId, shopifySyncProducts.id))
+      .where(conditions.length > 0 ? and(...conditions) : sql`1=1`); // Use the same condition as above
     const total = totalCountResult[0]?.count || 0;
 
     return NextResponse.json({
       success: true,
       blogs: transformedBlogs,
-      total: total,
-      hasMore: (offset + transformedBlogs.length) < total
+      total,
+      hasMore: (offset + transformedBlogs.length) < total,
+      limit,
+      offset
     });
   } catch (error) {
     console.error('Failed to fetch blogs:', error);
@@ -139,7 +202,6 @@ export async function POST(request: NextRequest) {
         createdAt: blogData.blog.createdAt.toISOString(),
         updatedAt: blogData.blog.updatedAt.toISOString(),
         productName: blogData.productTitle || 'Unknown Product',
-        targetAudience: metadataResponse.targetAudience || 'Research Scientists',
         wordCount: blogData.blog.wordCount || 0,
         keywords: (Array.isArray(blogData.blog.keywords) ? blogData.blog.keywords : []) as string[],
         metaDescription: blogData.blog.metaDescription || '',

@@ -5,6 +5,7 @@ import {
   FileText, Brain, Edit, CheckCircle, Loader, 
   ChevronRight, Lightbulb, Zap, PenTool 
 } from 'lucide-react';
+import Link from 'next/link';
 
 type WorkflowStep = 'topics' | 'outline' | 'content';
 type StepStatus = 'idle' | 'processing' | 'complete' | 'error';
@@ -15,20 +16,23 @@ interface StepState {
   message?: string;
 }
 
+// Represents a 'blog_idea' task from the content_pipeline
 interface StoredTopic { 
-  id: number; 
+  id: number; // This is content_pipeline.id for task_type = 'blog_idea'
   title: string;
 }
 
+// Represents the 'blog_outline' task object from the content_pipeline
 interface OutlineTask { 
-    id: number;
+    id: number; // This is the content_pipeline.id for the 'blog_outline' task
     title: string;
 }
 
-interface BlogPostData { 
+// Represents the blog post object returned by the API after generation
+interface GeneratedBlogPostData { 
     id: number;
     title: string;
-    slug: string;
+    slug: string; // Useful for preview links
     status: 'draft' | 'published' | 'archived';
     content: string;
     metaDescription: string;
@@ -45,6 +49,7 @@ const ContentGeneratorPage: React.FC = () => {
   
   const [selectedTopicTask, setSelectedTopicTask] = useState<StoredTopic | null>(null);
   const [generatedOutlineTask, setGeneratedOutlineTask] = useState<OutlineTask | null>(null);
+  const [generatedBlogPost, setGeneratedBlogPost] = useState<GeneratedBlogPostData | null>(null);
 
   const updateStep = (step: WorkflowStep, updates: Partial<StepState>) => {
     setSteps(prev => ({
@@ -52,44 +57,61 @@ const ContentGeneratorPage: React.FC = () => {
       [step]: { ...prev[step], ...updates, message: updates.message || prev[step].message }
     }));
   };
-
-  const generateTopics = async () => {
+  
+  // Fetch 'blog_idea' tasks from the pipeline
+  const fetchTopicIdeas = async () => {
     updateStep('topics', { status: 'processing', message: 'Fetching topic ideas from pipeline...' });
+    setSelectedTopicTask(null); // Reset selections
     setGeneratedOutlineTask(null);
+    setGeneratedBlogPost(null);
     updateStep('outline', { status: 'idle', data: null, message: '' });
     updateStep('content', { status: 'idle', data: null, message: '' });
     
     try {
-      const storedTopics = await fetchStoredTopics();
-      
-      updateStep('topics', { 
-        status: 'complete', 
-        data: { storedTopics: storedTopics },
-        message: storedTopics.length > 0 ? `Found ${storedTopics.length} blog ideas. Select one to generate an outline.` : "No pending blog ideas found in the pipeline. The cron job might need to run or topics need approval."
-      });
+      const response = await fetch('/api/content-pipeline/topics'); // This API returns {id, title}[]
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `Failed to fetch topic ideas (status ${response.status})`);
+      }
+      const data = await response.json();
+      if (data.success && Array.isArray(data.topics)) {
+        const validTopics: StoredTopic[] = data.topics.filter((t: any) => typeof t.id === 'number' && typeof t.title === 'string');
+        updateStep('topics', { 
+          status: 'complete', 
+          data: { storedTopics: validTopics },
+          message: validTopics.length > 0 ? `Found ${validTopics.length} blog ideas. Select one to generate an outline.` : "No pending blog ideas found. The cron job might need to run or topics need approval."
+        });
+      } else {
+        throw new Error(data.error || 'Fetched topics in unexpected format.');
+      }
     } catch (error: any) {
       updateStep('topics', { 
         status: 'error', 
-        message: `Error fetching topics: ${error.message}` 
+        message: `Error fetching topic ideas: ${error.message}` 
       });
     }
   };
 
-  const generateOutline = async () => {
+  useEffect(() => {
+    fetchTopicIdeas(); // Fetch topics on initial load
+  }, []);
+
+  const handleGenerateOutline = async () => {
     if (!selectedTopicTask) {
         alert("Please select a topic idea first.");
         return;
     }
     
     updateStep('outline', { status: 'processing', message: `Creating outline for: "${selectedTopicTask.title}"...` });
-    setGeneratedOutlineTask(null);
-    updateStep('content', { status: 'idle', data: null, message: '' });
+    setGeneratedOutlineTask(null); // Reset previous outline
+    setGeneratedBlogPost(null);
+    updateStep('content', { status: 'idle', data: null, message: '' }); // Reset content step
 
     try {
-      const response = await fetch('/api/generate/outline', {
+      const response = await fetch('/api/generate/outline', { // Calls POST /api/generate/outline
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pipelineTaskId: selectedTopicTask.id }),
+        body: JSON.stringify({ pipelineTaskId: selectedTopicTask.id }), 
       });
 
       const data = await response.json();
@@ -98,13 +120,13 @@ const ContentGeneratorPage: React.FC = () => {
       }
 
       if (data.outlineTask) {
-        setGeneratedOutlineTask(data.outlineTask as OutlineTask);
+        setGeneratedOutlineTask(data.outlineTask as OutlineTask); 
         updateStep('outline', { 
           status: 'complete',
           message: `Outline "${data.outlineTask.title}" generated! Ready to write content.` 
         });
       } else {
-        throw new Error('Outline generation API call succeeded but no outline task returned.');
+        throw new Error(data.message || 'Outline generation API call succeeded but no outline task returned.');
       }
     } catch (error: any) {
       updateStep('outline', { 
@@ -114,16 +136,17 @@ const ContentGeneratorPage: React.FC = () => {
     }
   };
 
-  const writeContent = async () => {
+  const handleWriteContent = async () => {
     if (!generatedOutlineTask) {
         alert("No outline has been generated or selected yet.");
         return;
     }
     
     updateStep('content', { status: 'processing', message: `AI agents writing content for: "${generatedOutlineTask.title.replace('Outline: ','')}"...` });
+    setGeneratedBlogPost(null);
     
     try {
-      const response = await fetch('/api/generate/full-blog', {
+      const response = await fetch('/api/generate/full-blog', { // Calls POST /api/generate/full-blog
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ outlineTaskId: generatedOutlineTask.id }),
@@ -135,13 +158,13 @@ const ContentGeneratorPage: React.FC = () => {
       }
 
       if (data.blogPost) {
+        setGeneratedBlogPost(data.blogPost as GeneratedBlogPostData);
         updateStep('content', { 
           status: 'complete',
-          data: { articles: [data.blogPost as BlogPostData] },
           message: `Content written for "${data.blogPost.title}"! View in Blog Manager or Preview.`
         });
       } else {
-        throw new Error("Content writing API call succeeded but no blog post returned.");
+        throw new Error(data.message || "Content writing API call succeeded but no blog post returned.");
       }
     } catch (error: any) {
       updateStep('content', { 
@@ -151,34 +174,18 @@ const ContentGeneratorPage: React.FC = () => {
     }
   };
 
-  const toggleTopicSelection = (topicTask: StoredTopic) => {
+  const handleToggleTopicSelection = (topicTask: StoredTopic) => {
+    if (steps.topics.status === 'processing' || steps.outline.status === 'processing' || steps.content.status === 'processing') return;
+
     if (selectedTopicTask?.id === topicTask.id) {
-      setSelectedTopicTask(null);
+      setSelectedTopicTask(null); 
     } else {
-      setSelectedTopicTask(topicTask);
+      setSelectedTopicTask(topicTask); 
     }
-    setGeneratedOutlineTask(null);
+    setGeneratedOutlineTask(null); 
+    setGeneratedBlogPost(null);
     updateStep('outline', { status: 'idle', data: null, message: '' });
     updateStep('content', { status: 'idle', data: null, message: '' });
-  };
-
-  const fetchStoredTopics = async (): Promise<StoredTopic[]> => {
-    try {
-      const response = await fetch('/api/content-pipeline/topics');
-      if (response.ok) {
-        const data = await response.json();
-        if (data.success && Array.isArray(data.topics)) {
-            return data.topics.filter((t: any) => typeof t.id === 'number' && typeof t.title === 'string');
-        }
-        console.warn("Fetched topics in unexpected format:", data);
-        return [];
-      }
-       const errorData = await response.json();
-       throw new Error(errorData.error || `Failed to fetch topics (status ${response.status})`);
-    } catch (error) {
-      console.error('Failed to fetch stored topics:', error);
-      throw error;
-    }
   };
 
   const availableTopics: StoredTopic[] = steps.topics.data?.storedTopics || [];
@@ -200,6 +207,16 @@ const ContentGeneratorPage: React.FC = () => {
   }) => {
     const stepState = steps[step];
     const isDisabled = disabledCondition || stepState.status === 'processing';
+    
+    let buttonText = 'Generate';
+    if (stepState.status === 'processing') buttonText = 'Processing...';
+    else if (stepState.status === 'complete') {
+        if (step === 'topics') buttonText = 'Ideas Loaded';
+        else if (step === 'outline') buttonText = 'Outline Ready';
+        else if (step === 'content') buttonText = 'Content Written';
+    } else if (step === 'topics' && stepState.status === 'idle') {
+        buttonText = 'Load Ideas';
+    }
     
     return (
       <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
@@ -232,9 +249,7 @@ const ContentGeneratorPage: React.FC = () => {
                 : 'bg-blue-600 text-white hover:bg-blue-700'
             }`}
           >
-            {stepState.status === 'processing' ? 'Processing...' :
-             stepState.status === 'complete' ? (step === 'topics' ? 'Ideas Loaded' : (step === 'outline' ? 'Outline Ready' : 'Content Written')) :
-             'Generate'}
+            {buttonText}
           </button>
         </div>
         
@@ -257,7 +272,7 @@ const ContentGeneratorPage: React.FC = () => {
         {/* Header */}
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-gray-900 mb-2">AI Content Factory</h1>
-          <p className="text-gray-600">Automated content generation for your chemical products</p>
+          <p className="text-gray-600">Generate blog content step-by-step from pipeline ideas.</p>
         </div>
 
         {/* Workflow Steps */}
@@ -267,61 +282,60 @@ const ContentGeneratorPage: React.FC = () => {
             icon={<Lightbulb size={20} />}
             title="1. Load Topic Ideas"
             description="Fetch pending 'blog_idea' tasks from the content pipeline."
-            onClick={generateTopics}
+            onClick={fetchTopicIdeas}
             disabledCondition={steps.topics.status === 'processing'}
           />
 
-          {/* Topic Selection Interface */}
-          {steps.topics.status === 'complete' && availableTopics.length > 0 && (
-            <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                📋 Select Topic Idea ({selectedTopicTask ? 1 : 0} selected)
-              </h3>
-              <p className="text-sm text-gray-600 mb-4">
-                Choose one topic idea to generate an outline for:
-              </p>
-              <div className="grid gap-3 max-h-60 overflow-y-auto">
-                {availableTopics.map((topicTask) => (
-                  <div
-                    key={topicTask.id}
-                    onClick={() => toggleTopicSelection(topicTask)}
-                    className={`p-4 border-2 rounded-lg cursor-pointer transition-all ${
-                      selectedTopicTask?.id === topicTask.id
-                        ? 'border-blue-500 bg-blue-50 text-blue-900'
-                        : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+          {steps.topics.status === 'complete' && (
+            availableTopics.length > 0 ? (
+                <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                    📋 Select Topic Idea ({selectedTopicTask ? 1 : 0} selected)
+                </h3>
+                <p className="text-sm text-gray-600 mb-4">
+                    Choose one topic idea to generate an outline for:
+                </p>
+                <div className="grid gap-3 max-h-60 overflow-y-auto">
+                    {availableTopics.map((topicTask) => (
+                    <div
+                        key={topicTask.id}
+                        onClick={() => handleToggleTopicSelection(topicTask)}
+                        className={`p-4 border-2 rounded-lg cursor-pointer transition-all ${
                         selectedTopicTask?.id === topicTask.id
-                          ? 'border-blue-500 bg-blue-500'
-                          : 'border-gray-300'
-                      }`}>
-                        {selectedTopicTask?.id === topicTask.id && (
-                          <div className="w-2.5 h-2.5 bg-white rounded-full"></div>
-                        )}
-                      </div>
-                      <span className="font-medium">{topicTask.title} (Task ID: {topicTask.id})</span>
+                            ? 'border-blue-500 bg-blue-50 text-blue-900'
+                            : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                        }`}
+                    >
+                        <div className="flex items-center gap-3">
+                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                            selectedTopicTask?.id === topicTask.id
+                            ? 'border-blue-500 bg-blue-500'
+                            : 'border-gray-300'
+                        }`}>
+                            {selectedTopicTask?.id === topicTask.id && (
+                            <div className="w-2.5 h-2.5 bg-white rounded-full"></div>
+                            )}
+                        </div>
+                        <span className="font-medium">{topicTask.title} (Task ID: {topicTask.id})</span>
+                        </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-              
-              {selectedTopicTask && (
-                <div className="mt-4 p-3 bg-blue-50 rounded-lg">
-                  <p className="text-sm text-blue-700">
-                    ✅ Topic "{selectedTopicTask.title}" selected. Click "Generate Outline" to continue.
-                  </p>
+                    ))}
                 </div>
-              )}
-            </div>
-          )}
-           {steps.topics.status === 'complete' && availableTopics.length === 0 && (
+                {selectedTopicTask && (
+                    <div className="mt-4 p-3 bg-blue-50 rounded-lg">
+                    <p className="text-sm text-blue-700">
+                        ✅ Topic "{selectedTopicTask.title}" selected. Click "Generate Outline" to continue.
+                    </p>
+                    </div>
+                )}
+                </div>
+            ) : (
                 <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm text-center">
-                    <p className="text-gray-600">No pending topic ideas found to generate outlines for. The cron job might need to run or existing ideas might already have outlines.</p>
+                    <p className="text-gray-600">No pending topic ideas found to generate outlines for. The cron job might need to run, or existing ideas might already have outlines/content.</p>
                 </div>
-            )}
-
+            )
+          )}
+          
           <div className="flex justify-center">
             <ChevronRight className="text-gray-400" size={24} />
           </div>
@@ -331,15 +345,15 @@ const ContentGeneratorPage: React.FC = () => {
             icon={<Brain size={20} />}
             title="2. Generate Outline"
             description="Create detailed article structures and key points"
-            onClick={generateOutline}
-            disabledCondition={!selectedTopicTask || steps.outline.status === 'processing'}
+            onClick={handleGenerateOutline}
+            disabledCondition={!selectedTopicTask || steps.topics.status !== 'complete' || steps.outline.status === 'processing'}
           />
 
           {steps.outline.status === 'complete' && generatedOutlineTask && (
              <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
                 <h3 className="text-lg font-semibold text-gray-900 mb-2">Outline Generated:</h3>
                 <p className="text-md text-gray-700">{generatedOutlineTask.title}</p>
-                <p className="text-sm text-gray-500">Task ID: {generatedOutlineTask.id}</p>
+                <p className="text-sm text-gray-500">Outline Task ID: {generatedOutlineTask.id}</p>
              </div>
           )}
 
@@ -352,31 +366,31 @@ const ContentGeneratorPage: React.FC = () => {
             icon={<PenTool size={20} />}
             title="3. Write Content"
             description="AI agents collaborate to write publish-ready blog articles"
-            onClick={writeContent}
-            disabledCondition={!generatedOutlineTask || steps.content.status === 'processing'}
+            onClick={handleWriteContent}
+            disabledCondition={!generatedOutlineTask || steps.outline.status !== 'complete' || steps.content.status === 'processing'}
           />
         </div>
 
         {/* Results Section */}
-        {steps.content.status === 'complete' && steps.content.data?.articles?.length > 0 && (
+        {steps.content.status === 'complete' && generatedBlogPost && (
           <div className="mt-8 bg-white border border-gray-200 rounded-lg p-6">
             <div className="flex items-center gap-3 mb-4">
               <CheckCircle className="text-green-600" size={24} />
               <h2 className="text-xl font-semibold text-gray-900">Content Ready!</h2>
             </div>
             <p className="text-gray-600 mb-4">
-              Blog article "{steps.content.data.articles[0].title}" (ID: {steps.content.data.articles[0].id}) has been generated. You can view it in the Blog Manager.
+              Blog article "{generatedBlogPost.title}" (ID: {generatedBlogPost.id}) has been generated as a draft.
             </p>
             <div className="flex gap-4">
-              <a
-                href={`/dashboard/content/blogs/${steps.content.data.articles[0].id}`}
+              <Link
+                href={`/dashboard/content?view=edit&id=${generatedBlogPost.id}&mode=edit`}
                 className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
               >
                 <Edit size={16} />
                 Edit in Blog Manager
-              </a>
+              </Link>
               <a
-                href={`/blog/${steps.content.data.articles[0].slug}`}
+                href={`/blog/${generatedBlogPost.slug}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
